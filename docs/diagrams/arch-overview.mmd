@@ -1,0 +1,40 @@
+graph TB
+    subgraph SERVER["MAY THU NGAN — SERVER"]
+        S_UI["React Ink / blessed-contrib<br/>Server Dashboard"]
+        S_CORE["C++ Core + Session Manager"]
+        S_SOCKET["TCP Socket Server<br/>port 8888"]
+        S_LFM["Latent Factor Model<br/>P, Q matrices"]
+        S_FILE["File I/O<br/>users.dat, transactions.dat<br/>lfm_*.dat, report.txt"]
+        S_DATA["Parallel Arrays<br/>menu, users, orders, txns"]
+
+        S_UI <--> S_CORE
+        S_CORE <--> S_SOCKET
+        S_CORE <--> S_DATA
+        S_CORE <--> S_LFM
+        S_CORE --> S_FILE
+        S_LFM <--> S_DATA
+    end
+
+    subgraph NET["LAN noi bo"]
+        MSG["TCP messages<br/>START / MENU_DATA / SUGGEST<br/>USER_LOGIN / USER_REGISTER<br/>ITEM_ADDED / ORDER_SUBMIT<br/>HEARTBEAT / STOP"]
+    end
+
+    subgraph C1["BAN 01 — CLIENT"]
+        C1_UI["React Ink Client UI<br/>Tieng Viet"]
+        C1_CORE["C++ Order Builder"]
+        C1_SOCK["TCP Socket Client"]
+        C1_UI <--> C1_CORE
+        C1_CORE <--> C1_SOCK
+    end
+
+    subgraph C2["BAN 02 — CLIENT"]
+        C2_UI["React Ink Client UI"]
+        C2_CORE["C++ Order Builder"]
+        C2_SOCK["TCP Socket Client"]
+        C2_UI <--> C2_CORE
+        C2_CORE <--> C2_SOCK
+    end
+
+    S_SOCKET <-->|TCP/IP| NET
+    NET <-->|TCP/IP| C1_SOCK
+    NET <-->|TCP/IP| C2_SOCK

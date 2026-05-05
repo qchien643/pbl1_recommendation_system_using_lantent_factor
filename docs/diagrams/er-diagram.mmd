@@ -1,0 +1,57 @@
+erDiagram
+    MENU_ITEMS {
+        char code PK "P01, B01..."
+        char name "Pho Bo Tai..."
+        float price
+        char category "P, B, C, G, A, D, T"
+    }
+    USERS {
+        int userId PK
+        char phone UK "10 digits"
+        char name "Customer name (ASCII)"
+        char desc "Optional description"
+        int totalOrders
+    }
+    USER_ITEM_HISTORY {
+        int userId FK
+        char itemCode FK
+        int orderCount "aggregate"
+        float implicitRating "log(1+count)"
+    }
+    SESSION {
+        char sessionCode PK
+        char startTime
+        char endTime
+    }
+    TRANSACTIONS {
+        int txnId PK
+        int userIdx FK
+        char timestamp
+        char sessionCode FK
+        float subtotal
+        float discount
+        float total
+    }
+    TXN_ITEMS {
+        int txnId FK
+        int slot "0..4"
+        char itemCode FK
+        int quantity
+    }
+    LFM_MODEL {
+        int userId FK
+        float P_vector "K floats"
+    }
+    LFM_ITEM_VECTORS {
+        char itemCode FK
+        float Q_vector "K floats"
+    }
+
+    SESSION ||--o{ TRANSACTIONS : contains
+    TRANSACTIONS ||--|{ TXN_ITEMS : has
+    TXN_ITEMS }o--|| MENU_ITEMS : references
+    TRANSACTIONS }o--|| USERS : placed_by
+    USERS ||--o{ USER_ITEM_HISTORY : derived_from_txns
+    USER_ITEM_HISTORY }o--|| MENU_ITEMS : about
+    USERS ||--o| LFM_MODEL : has_vector
+    MENU_ITEMS ||--o| LFM_ITEM_VECTORS : has_vector

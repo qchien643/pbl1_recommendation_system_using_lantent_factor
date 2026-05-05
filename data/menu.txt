@@ -1,0 +1,14 @@
+# data/menu.txt — Menu nha hang, moi dong: CODE|NAME|PRICE|CATEGORY
+# Dong bat dau bang '#' bi bo qua
+# See .claude/knowledge/03-menu-codes.md
+P01|Pho Bo Tai|65000|P
+P02|Pho Ga|55000|P
+B01|Bun Bo Hue|60000|B
+B02|Bun Rieu|55000|B
+C01|Com Tam Suon Bi|75000|C
+C02|Com Chien Duong Chau|65000|C
+G01|Goi Cuon (5 cuon)|55000|G
+A01|Cha Gio (10 cai)|80000|A
+D01|Tra Da|15000|D
+D02|Nuoc Ngot|20000|D
+T01|Che Ba Mau|25000|T

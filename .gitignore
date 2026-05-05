@@ -1,0 +1,126 @@
+# =====================================================================
+# Build artifacts (CMake / C++)
+# =====================================================================
+build/
+build-*/
+out/
+cmake-build-*/
+
+# Compiled binaries
+*.exe
+*.obj
+*.o
+*.a
+*.lib
+*.dll
+*.so
+*.dylib
+*.pdb
+*.ilk
+*.exp
+
+# CMake generated
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+compile_commands.json
+*.vcxproj
+*.vcxproj.filters
+*.vcxproj.user
+*.sln
+
+# =====================================================================
+# Python (báo cáo generator)
+# =====================================================================
+.venv*/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+.pytest_cache/
+
+# =====================================================================
+# Node.js (React Ink + dashboard)
+# =====================================================================
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+.npm/
+.yarn/
+
+# =====================================================================
+# Runtime data (sinh bởi seed_data / server lúc chạy)
+# =====================================================================
+# Binary state — regenerate được bằng seed_data.exe
+data/users.dat
+data/transactions.dat
+data/lfm_P.dat
+data/lfm_Q.dat
+
+# Append-only logs
+data/transactions.log
+data/snapshot.txt
+
+# Báo cáo cuối ca
+data/reports/*.txt
+!data/reports/.gitkeep
+
+# Giữ các file config / seed có ý nghĩa
+!data/menu.txt
+!data/personas.txt
+
+# =====================================================================
+# Báo cáo generated (tùy chọn — bỏ comment dòng dưới nếu không muốn track .docx)
+# =====================================================================
+# docs/report.docx          # <-- bỏ comment để không commit báo cáo lên git
+docs/report-new.docx        # alt output khi report.docx bị lock
+docs/report.tmp.docx
+docs/snapshot.txt
+
+# =====================================================================
+# IDE / Editor
+# =====================================================================
+.vscode/
+!.vscode/extensions.json
+.idea/
+*.iml
+*.suo
+*.user
+*.swp
+*.swo
+*~
+.history/
+
+# =====================================================================
+# OS
+# =====================================================================
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+.DS_Store
+.AppleDouble
+.LSOverride
+$RECYCLE.BIN/
+
+# =====================================================================
+# Claude Code agent — giữ nguyên config dùng chung, ẩn config cá nhân
+# =====================================================================
+.claude/settings.local.json
+.claude/projects/
+.claude/cache/
+
+# =====================================================================
+# Misc
+# =====================================================================
+*.log
+*.bak
+*.tmp
+.env
+.env.local
+*.pid
+core

@@ -1,0 +1,31 @@
+stateDiagram-v2
+    [*] --> CONNECTING : --client IP
+
+    CONNECTING --> WAITING : TCP ket noi OK
+    CONNECTING --> ERROR : Khong ket noi duoc
+
+    WAITING --> PHONE_INPUT : Nhan START tu Server
+
+    PHONE_INPUT --> LOADING : SDT 10 chu so hop le<br/>gui USER_LOGIN
+
+    LOADING --> NAME_INPUT : USER_ACK isNew=true<br/>(khach moi, chua dat ten)
+    LOADING --> ORDERING   : USER_ACK isNew=false<br/>+ SUGGEST
+
+    NAME_INPUT --> REGISTERING : Nhap ten + (mo ta)<br/>gui USER_REGISTER
+    REGISTERING --> ORDERING   : USER_ACK moi + SUGGEST
+
+    ORDERING --> ORDERING : Them mon hop le<br/>(gui ITEM_ADDED, nhan SUGGEST)
+    ORDERING --> CHECKOUT : Nhap 00 / du 5 mon
+
+    CHECKOUT --> SUBMITTING : Y / Enter<br/>gui ORDER_SUBMIT
+    CHECKOUT --> ORDERING   : N (sua don)
+
+    SUBMITTING --> THANKS : ORDER_ACK OK
+    THANKS --> PHONE_INPUT : Tu dong sau 3s
+
+    PHONE_INPUT --> CLOSED : Nhan STOP
+    ORDERING --> CLOSED : Nhan STOP
+    NAME_INPUT --> CLOSED : Nhan STOP
+
+    CLOSED --> [*]
+    ERROR --> [*]

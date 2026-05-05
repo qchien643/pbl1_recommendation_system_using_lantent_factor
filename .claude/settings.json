@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git status)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(cmake:*)",
+      "Bash(cmake --build:*)",
+      "Bash(npm install:*)",
+      "Bash(npm run:*)",
+      "Bash(python matrix_factorization.py)",
+      "Bash(python:*)",
+      "Bash(g++ --version)",
+      "Bash(g++ -std=c++17 -Wall -o server.exe server/main_server.cpp server/socket_server.cpp shared/net.cpp shared/state.cpp shared/utils.cpp shared/protocol.cpp server/menu.cpp server/phone_validator.cpp server/user_store.cpp server/order_store.cpp server/lfm.cpp server/file_manager.cpp server/session.cpp -lws2_32)"
+    ]
+  }
+}

@@ -1,256 +1,391 @@
-# Matrix Factorization — Tài liệu thiết kế hệ thống
+# Restaurant Ordering System — LFM Recommendations
 
----
+Hệ thống đặt món nhà hàng chạy trên **TCP LAN**, dùng **Latent Factor Model (Matrix Factorization)** để gợi ý món cá nhân hoá theo số điện thoại. Đề tài PBL1 — Đại học Bách khoa Đà Nẵng, đề 702.
 
-## Mục lục
-
-- [Tổng quan](#tổng-quan)
-- [Các tính năng](#các-tính-năng)
-  - [Tính năng 1: Train mô hình](#tính-năng-1-train-mô-hình)
-  - [Tính năng 2: Early Stopping](#tính-năng-2-early-stopping)
-  - [Tính năng 3: Cập nhật khi dữ liệu thay đổi](#tính-năng-3-cập-nhật-khi-dữ-liệu-thay-đổi)
-  - [Tính năng 4: Thêm user mới](#tính-năng-4-thêm-user-mới)
-  - [Tính năng 5: Thêm item mới](#tính-năng-5-thêm-item-mới)
-- [Vòng đời đầy đủ của mô hình](#vòng-đời-đầy-đủ-của-mô-hình)
-
----
-
-## Tổng quan
-
-Hệ thống giải bài toán **Collaborative Filtering**: dự đoán rating cho các cặp user–item chưa được đánh giá, dựa trên các rating đã có. Phương pháp sử dụng là Matrix Factorization — phân tích bảng rating thành hai không gian ẩn đại diện cho user và item, sau đó dùng tích của chúng để lấp đầy các ô còn trống.
-
-Điểm cốt lõi trong thiết kế: **mô hình không cần train lại từ đầu** mỗi khi dữ liệu thay đổi. Hệ thống tự động phân tích mức độ thay đổi và chọn chiến lược cập nhật phù hợp — tiết kiệm tài nguyên trong khi vẫn đảm bảo độ chính xác.
-
----
-
-## Các tính năng
-
----
-
-### Tính năng 1: Train mô hình
-
-**Mục đích:** Học cấu trúc ẩn của toàn bộ bảng rating từ đầu — xây dựng biểu diễn latent cho mọi user và item hiện có.
-
-**Thiết kế:**
-
-Quá trình train dùng Stochastic Gradient Descent (SGD) — tối ưu hóa từng rating một thay vì toàn bộ cùng lúc. Sau mỗi epoch, hệ thống lưu lại snapshot của bảng rating hiện tại để làm cơ sở so sánh cho các lần cập nhật về sau.
-
-Hàm loss cần tối thiểu hóa:
-
-$$L = \sum_{(i,j) \in \Omega} (X_{ij} - \hat{X}_{ij})^2 + \lambda(\|P\|^2 + \|Q\|^2)$$
-
-Số hạng thứ nhất đo sai số trên các rating đã biết. Số hạng thứ hai (regularization) ngăn mô hình phóng to tham số vô hạn chỉ để khớp dữ liệu training — đây là điều kiện bắt buộc để dự đoán tốt các ô chưa biết.
-
-**Workflow:**
-
-```mermaid
-flowchart TD
-    A([Bắt đầu train]) --> B[Khởi tạo P, Q\nvới giá trị ngẫu nhiên nhỏ]
-    B --> C[Lưu snapshot\nbảng rating hiện tại]
-    C --> D[Xáo trộn thứ tự\ncác rating đã biết]
-    D --> E[Duyệt từng rating\nCập nhật P và Q\ntheo SGD]
-    E --> F[Tính loss\ntrên toàn bộ rating đã biết]
-    F --> G{Early Stopping\nkích hoạt?}
-    G -->|Có| H([Dừng — lưu kết quả])
-    G -->|Không| I{Còn epoch?}
-    I -->|Có| D
-    I -->|Không| H
+```
+┌─ Server (thu ngân) ──────┐             ┌─ Client (bàn khách) ─┐
+│  Menu + Users + Orders   │  TCP 8888   │  Order Builder        │
+│  Session Manager         │◄──────────►│  Input Handler         │
+│  Latent Factor Engine    │             │  React Ink UI          │
+│  File Reports + Models   │             └────────────────────────┘
+└──────────────────────────┘
 ```
 
 ---
 
-### Tính năng 2: Early Stopping
+## 1. Yêu cầu môi trường
 
-**Mục đích:** Tự động dừng quá trình train khi mô hình không còn cải thiện, tránh lãng phí tài nguyên và tránh hiện tượng loss tăng trở lại sau khi đã đạt điểm tối ưu.
-
-**Thiết kế:**
-
-Có hai ngưỡng điều khiển:
-
-- **`patience`** — số epoch liên tiếp được phép không cải thiện trước khi dừng
-- **`min_delta`** — mức cải thiện tối thiểu được coi là "có ý nghĩa". Cần thiết vì loss dao động nhỏ (ví dụ `1.0646 → 1.0645`) không phản ánh mô hình thực sự học thêm được gì.
-
-Hai tham số này hoạt động độc lập: `patience` kiểm soát **thời gian chờ**, `min_delta` kiểm soát **tiêu chuẩn cải thiện**.
-
-**Workflow:**
-
-```mermaid
-flowchart TD
-    A[Kết thúc một epoch] --> B[Tính loss hiện tại]
-    B --> C{loss cải thiện\nhơn min_delta\nso với best_loss?}
-    C -->|Có| D[Cập nhật best_loss\nReset bộ đếm về 0]
-    C -->|Không| E[Tăng bộ đếm lên 1]
-    D --> F[Tiếp tục epoch tiếp theo]
-    E --> G{Bộ đếm\n≥ patience?}
-    G -->|Không| F
-    G -->|Có| H([Dừng sớm\nBáo cáo best_loss])
-```
-
----
-
-### Tính năng 3: Cập nhật khi dữ liệu thay đổi
-
-**Mục đích:** Phản ánh các thay đổi rating của người dùng vào mô hình mà không cần train lại từ đầu.
-
-**Thiết kế:**
-
-Khi người dùng chỉnh sửa rating, không phải lúc nào cũng cần chạy lại toàn bộ quá trình train. Hệ thống so sánh bảng rating mới với snapshot lần train trước, tính tỉ lệ thay đổi, rồi chọn một trong ba chiến lược:
-
-| Tỉ lệ thay đổi | Chiến lược | Lý do |
+| Tool | Phiên bản tối thiểu | Dùng để |
 |---|---|---|
-| < 10% | Online Update | Thay đổi nhỏ lẻ, chỉ cần điều chỉnh đúng các ô bị ảnh hưởng |
-| 10% – 40% | Fine-tune toàn bộ | Đủ lớn để ảnh hưởng cấu trúc chung, cần SGD toàn bộ nhưng ít epoch vì điểm xuất phát đã tốt |
-| > 40% | Train lại từ đầu | Quá nhiều thay đổi, cấu trúc P và Q cũ không còn phản ánh đúng dữ liệu |
+| **C++ compiler** | `g++` 9+ hoặc MSVC với C++17 | Biên dịch server + client |
+| **CMake** | 3.15+ | Build automation |
+| **Node.js** | 18+ (đã test 24.x) | React Ink UI + demo scripts |
+| **npm** | 10+ | Cài dependencies |
+| **Python 3** | 3.8+ (tuỳ chọn) | Chạy `matrix_factorization.py` reference |
 
-**Workflow:**
+### Windows
 
-```mermaid
-flowchart TD
-    A([Người dùng chỉnh sửa rating]) --> B[So sánh bảng mới\nvới snapshot]
-    B --> C[Đếm số ô thay đổi]
-    C --> D[Tính tỉ lệ\n= ô thay đổi / tổng ô đã biết]
-    D --> E{Tỉ lệ thay đổi}
+Cài Git Bash + [MinGW-W64 (UCRT)](https://winlibs.com/) (đã bao gồm `g++`, `cmake`).
+Thêm vào PATH: `C:\mingw64\bin` và Node.js installer path.
 
-    E -->|< 10%| F[🟢 Luồng 1\nOnline Update]
-    E -->|10% – 40%| G[🟡 Luồng 2\nFine-tune toàn bộ]
-    E -->|> 40%| H[🔴 Luồng 3\nTrain lại từ đầu]
+```bash
+g++ --version        # >= 9
+cmake --version      # >= 3.15
+node --version       # >= 18
+```
 
-    F --> F1[Chỉ chạy SGD\ntrên các ô thay đổi\nSố lần lặp nhỏ]
-    G --> G1[Chạy SGD toàn bộ\nLearning rate nhỏ hơn\nSố epoch ít hơn]
-    H --> H1[Reset mô hình\nChạy lại toàn bộ\nnhư lần train đầu]
+### Linux / macOS
 
-    F1 --> I[Cập nhật snapshot]
-    G1 --> I
-    H1 --> I
-    I --> J([Hoàn tất])
+```bash
+sudo apt install build-essential cmake        # Ubuntu/Debian
+# hoặc
+brew install gcc cmake                        # macOS
+```
+
+Note: server dùng `std::thread`, trên Linux cần `-lpthread` (CMakeLists đã xử lý).
+
+---
+
+## 2. Build
+
+Từ thư mục gốc dự án:
+
+```bash
+cmake -S . -B build -G "MinGW Makefiles"     # Windows (Git Bash + MinGW)
+# hoặc
+cmake -S . -B build                           # Linux / macOS / VS native
+cmake --build build
+```
+
+Kết quả trong `build/`:
+
+- `build/server.exe` — TCP server (thu ngân)
+- `build/client.exe` — TCP client (bàn khách), có 2 chế độ: text + `--json`
+- `build/seed_data.exe` — sinh dữ liệu mẫu (10 khách quen)
+- `build/phase1_test.exe` — smoke test toàn bộ C++ core
+
+(Trên Linux/macOS bỏ phần `.exe`.)
+
+---
+
+## 3. Cài React Ink UI
+
+```bash
+cd cli
+npm install        # ~10s, cài ink + tsx + react + deps
+cd ..
 ```
 
 ---
 
-### Tính năng 4: Thêm user mới
+## 4. Chạy demo kịch bản (khuyến nghị chạy lần đầu)
 
-**Mục đích:** Tích hợp user mới vào mô hình đang chạy mà không làm mất kiến thức đã học về các user và item cũ.
+Script đã chuẩn bị sẵn sẽ reset data → seed 10 khách quen → mở ca → cho 4 khách đặt món → đóng ca → in báo cáo:
 
-**Thiết kế:**
+```bash
+bash tools/demo.sh
+```
 
-Khi thêm user mới, không gian latent (được mã hóa trong Q) đã được xây dựng từ toàn bộ lịch sử rating cũ. User mới chỉ cần **tìm vị trí của mình trong không gian đó** — không cần xây dựng lại không gian từ đầu.
+Kết quả mong đợi (~20 giây):
 
-Chiến lược được chọn dựa trên tỉ lệ user mới so với tổng số user:
+- KHÁCH 1 **Anh Nam** `0901234567` → chào khách quen, top-3 = Trà Đá + Phở Bò + Cơm Tấm
+- KHÁCH 2 **Chị Lan** `0912345678` → top-3 khác hẳn = Nước Ngọt + Cơm Tấm + Gỏi Cuốn
+- KHÁCH 3 SDT mới `0911111111` → cold-start, gợi ý theo global pattern
+- KHÁCH 4 SDT mới `0938888888` → đơn lớn 2.795.000đ → tự giảm 25% = **2.096.250đ**
+- Báo cáo `data/reports/report_YYYY-MM-DD.txt` sinh đầy đủ
 
-| Tỉ lệ user mới | Chiến lược | Lý do |
+---
+
+## 5. Chạy thủ công (2 terminal)
+
+### Bước 1: Sinh dữ liệu mẫu (chỉ cần lần đầu)
+
+```bash
+./build/seed_data.exe
+cat data/personas.txt      # xem danh sách 10 SDT mẫu
+```
+
+### Bước 2: Terminal A — Server
+
+Có 2 lựa chọn:
+
+**Text mode (đơn giản):**
+```bash
+./build/server.exe --server
+```
+Server in `[Server] Ready. Nhap MA SO (1-9 chu so) de MO CA:`  
+→ **gõ** `1234` + Enter để mở ca. Gõ lại `1234` để đóng ca.
+
+**blessed-contrib Dashboard (khuyến nghị):**
+```bash
+cd cli
+npm run server
+```
+Dashboard grid 12x12 có:
+- **Header** + panel **Session** (mở/đóng bằng cách gõ số + Enter)
+- 2 **LCD gauges** hiển thị số đơn và doanh thu (nghìn đồng) dạng LCD number
+- Panel **Stats tổng** (clients, users, discount, LFM accept rate)
+- Bảng **Bàng khách** (contrib.table): số bàn, SDT, trạng thái, heartbeat N giây trước
+- **Heartbeat sparkline** (contrib.sparkline) cập nhật realtime 60s gần nhất
+- **Activity log** (contrib.log) scrollable với 30 dòng, màu theo loại event
+
+Phím: `0-9` nhập mã số ca, `Enter` xác nhận, `Backspace` xoá, `Esc`/`Ctrl-C` thoát.
+
+Nếu muốn bản React Ink (đơn giản hơn, ít khung):
+```bash
+npm run server-ink
+```
+
+### Bước 3: Terminal B — Client (3 lựa chọn)
+
+#### 3a. Client text-mode (đơn giản nhất)
+
+```bash
+./build/client.exe --client 127.0.0.1 1
+```
+
+Làm theo prompt:
+```
+Vui long nhap so dien thoai (10 chu so):
+> 0901234567
+
+Nhap MA MON va SO LUONG (VD: P01 2) - 00/Enter = Xong
+> P01 1
+> D01 1
+> 00
+
+Xac nhan gui len Server? (Y=Co / N=Huy) [Y]:
+> Y
+```
+
+#### 3b. Client React Ink (giao diện terminal đẹp — khuyến nghị)
+
+```bash
+cd cli
+npm start                          # mặc định 127.0.0.1, bàn 1
+npm start -- 192.168.1.100 2       # IP khác, bàn 2
+```
+
+Giao diện có:
+- Header **"Ban 02"** với gradient cristal big text + status bar màu thay đổi theo state
+- **PhoneInput** với 10 ô `[_][_]...` nhấp nháy, validate inline, gợi ý SDT mẫu
+- **MenuDisplay** màu theo nhóm món (Phở đỏ, Bún tím, Cơm vàng, Đồ uống cyan...), món đã chọn gạch ngang
+- **SuggestPanel** với medal 🥇🥈🥉 + bar chart `█████░░░░░` co giãn theo score
+- **OrderSummary** thời gian thực: subtotal tính ngay khi thêm món, báo "se duoc giam 25%" khi chạm ngưỡng
+- **Invoice** border double cyan, bấm `Y`/`Enter` xác nhận hoặc `N` sửa
+- **DailySummary** (sau confirm): "✓ CAM ON QUY KHACH!" với countdown 3s auto-next
+
+**Lưu ý:** React Ink cần terminal thật có TTY. Không chạy được qua pipe/redirect.
+
+#### 3c. Client JSON-mode (cho tích hợp / test)
+
+```bash
+./build/client.exe --client 127.0.0.1 1 --json
+```
+
+Gõ vào JSON command, mỗi dòng 1 object:
+```json
+{"cmd":"login","phone":"0901234567"}
+{"cmd":"add_item","code":"P01","qty":1}
+{"cmd":"finish"}
+{"cmd":"confirm"}
+{"cmd":"quit"}
+```
+
+Server events trả về cũng là JSON, 1 dòng/object. Hữu ích cho automated test.
+
+### Nhiều bàn khách đồng thời — trên cùng 1 máy
+
+Không cần Docker hay VM. TCP socket trên `127.0.0.1` hoạt động giống hệt như mạng LAN thật, chỉ cần **nhiều terminal windows riêng**.
+
+#### Cách 1A — Script tự động UI mode (ĐẸP NHẤT)
+
+```cmd
+tools\launch_ui.bat 3
+```
+
+Mở **1 SERVER Dashboard (React Ink)** + **3 Client UI (React Ink)**, mỗi cửa sổ là một "máy bàn" độc lập với giao diện màu đẹp. Ở Server Dashboard gõ `1234` + Enter để mở ca → các client tự động nhận START và prompt nhập SDT.
+
+#### Cách 1B — Script tự động text mode (nhẹ hơn)
+
+```cmd
+tools\launch_multi.bat 3
+```
+
+Mở 1 server + 3 client ở **text mode** (không cần React Ink). Phù hợp nếu muốn chạy nhiều terminal cùng lúc mà CPU yếu.
+
+Hoặc cross-platform (Git Bash):
+```bash
+bash tools/launch_multi.sh 3
+```
+
+#### Cách 2 — Thủ công
+
+Mở **4 cửa sổ Git Bash** (hoặc Windows Terminal tabs):
+
+| Window | Lệnh | Vai trò |
 |---|---|---|
-| < 20% | Chỉ học vector user mới, giữ nguyên Q | Không gian latent cũ đủ để mô tả user mới |
-| 20% – 50% | Học vector mới → Fine-tune toàn bộ | Lượng user mới đủ lớn để điều chỉnh nhẹ không gian latent |
-| > 50% | Train lại từ đầu | Quá nhiều user mới, không gian latent cũ không còn đại diện tốt |
+| 1 | `./build/server.exe --server` | Máy thu ngân |
+| 2 | `./build/client.exe --client 127.0.0.1 1` | Bàn 1 |
+| 3 | `./build/client.exe --client 127.0.0.1 2` | Bàn 2 |
+| 4 | `./build/client.exe --client 127.0.0.1 3` | Bàn 3 |
 
-**Workflow:**
-
-```mermaid
-flowchart TD
-    A([Thêm user mới\nvào hệ thống]) --> B[Khởi tạo vector latent\nngẫu nhiên cho user mới]
-    B --> C[Tính tỉ lệ\n= user mới / tổng user]
-    C --> D{Tỉ lệ user mới}
-
-    D -->|< 20%| E[🟢 Luồng 1]
-    D -->|20% – 50%| F[🟡 Luồng 2]
-    D -->|> 50%| G[🔴 Luồng 3]
-
-    E --> E1[Học vector user mới\nQ không thay đổi\nUser cũ không ảnh hưởng]
-
-    F --> F1[Bước 1\nHọc vector user mới\nQ không thay đổi]
-    F1 --> F2[Bước 2\nFine-tune nhẹ toàn bộ\nP và Q cùng điều chỉnh]
-
-    G --> G1[Reset toàn bộ\nTrain lại từ đầu\nvới dữ liệu đầy đủ]
-
-    E1 --> H[Cập nhật snapshot]
-    F2 --> H
-    G1 --> H
-    H --> I([Hoàn tất])
+Hoặc dùng React Ink UI (mỗi bàn 1 tab):
+```bash
+cd cli
+npm start -- 127.0.0.1 1    # Tab 1
+npm start -- 127.0.0.1 2    # Tab 2
+npm start -- 127.0.0.1 3    # Tab 3
 ```
+
+Server hỗ trợ tối đa **20 client đồng thời** (`MAX_CLIENTS` trong `shared/constants.h`).
+
+#### Cách 3 — Mạng LAN thật giữa nhiều máy
+
+Máy bạn làm server, máy khác làm client:
+
+**Máy A (server):**
+```bash
+# Biết IP LAN của máy A (vd 192.168.1.100)
+ipconfig                              # Windows
+# hoac: hostname -I                   # Linux
+./build/server.exe --server
+# Mo Windows Firewall: cho phep TCP port 8888 inbound
+```
+
+**Máy B, C, D... (client):**
+```bash
+./build/client.exe --client 192.168.1.100 2
+# Hoac React Ink:
+cd cli && npm start -- 192.168.1.100 2
+```
+
+Cả A và B đều phải build xong binary + cùng mạng LAN. Firewall Windows có thể chặn lần đầu → cho phép `server.exe` nhận kết nối.
+
+#### Có cần Docker không?
+
+**Không.** Dự án này chỉ cần TCP socket — dùng `127.0.0.1` với nhiều terminal là đủ mô phỏng. Docker chỉ hữu ích nếu:
+- Muốn mỗi client có IP riêng trong network isolated (vd `172.20.0.2`, `172.20.0.3`) để test reconnection/ACL scenarios.
+- Triển khai thật ra cloud / production.
+- Muốn đóng gói để người khác chạy mà không cần cài g++/CMake.
+
+Cho demo PBL1 và test đa client cục bộ, terminal windows là giải pháp đơn giản + chính xác nhất.
 
 ---
 
-### Tính năng 5: Thêm item mới
+## 6. SDT mẫu để thử
 
-**Mục đích:** Tích hợp item mới vào mô hình đang chạy mà không làm mất kiến thức đã học về các user và item cũ.
+Sau khi chạy `seed_data.exe`, có 10 khách có sẵn. Xem chi tiết trong [`data/personas.txt`](data/personas.txt):
 
-**Thiết kế:**
-
-Hoàn toàn đối xứng với tính năng thêm user. Lần này không gian latent của user (P) được giữ cố định, item mới học vị trí của mình trong không gian đó thông qua Q.
-
-| Tỉ lệ item mới | Chiến lược | Lý do |
+| SDT | Khách | Gợi ý sẽ thấy |
 |---|---|---|
-| < 20% | Chỉ học vector item mới, giữ nguyên P | Không gian latent cũ đủ để mô tả item mới |
-| 20% – 50% | Học vector mới → Fine-tune toàn bộ | Cần điều chỉnh nhẹ không gian latent để nhất quán |
-| > 50% | Train lại từ đầu | Quá nhiều item mới, cần xây dựng lại toàn bộ |
+| `0901234567` | Anh Nam (văn phòng) | Trà Đá + Phở Bò + Cơm Tấm |
+| `0912345678` | Chị Lan (sinh viên) | Nước Ngọt + Cơm Tấm + Gỏi Cuốn |
+| `0923456789` | Bác Hùng (cuối tuần) | Bún Bò + Chè + Bún Riêu |
+| `0956789012` | Cô Tư (một mình) | Phở Gà + Chè + Nước Ngọt |
+| `0989012345` | Bác Sáu (miền Tây) | Cơm Tấm + Chả Giò + Trà Đá |
+| `0990123456` | Anh Khoa (cold-start) | Phở Bò + Trà Đá (điểm thấp) |
+| bất kỳ SDT 10 số khác | (khách mới) | Cold-start, score nhỏ |
 
-**Workflow:**
+Menu codes: `P01`/`P02`=Phở, `B01`/`B02`=Bún, `C01`/`C02`=Cơm, `G01`=Gỏi Cuốn, `A01`=Chả Giò, `D01`/`D02`=Đồ Uống, `T01`=Chè.
 
-```mermaid
-flowchart TD
-    A([Thêm item mới\nvào hệ thống]) --> B[Khởi tạo vector latent\nngẫu nhiên cho item mới]
-    B --> C[Tính tỉ lệ\n= item mới / tổng item]
-    C --> D{Tỉ lệ item mới}
+---
 
-    D -->|< 20%| E[🟢 Luồng 1]
-    D -->|20% – 50%| F[🟡 Luồng 2]
-    D -->|> 50%| G[🔴 Luồng 3]
+## 7. Lịch sử giao dịch — `data/transactions.log`
 
-    E --> E1[Học vector item mới\nP không thay đổi\nItem cũ không ảnh hưởng]
+Mỗi đơn khi được `ORDER_SUBMIT` sẽ được **append** vào [`data/transactions.log`](data/transactions.log) — một dòng/đơn, format:
 
-    F --> F1[Bước 1\nHọc vector item mới\nP không thay đổi]
-    F1 --> F2[Bước 2\nFine-tune nhẹ toàn bộ\nP và Q cùng điều chỉnh]
+```
+TIMESTAMP|SESSION_CODE|PHONE|CODE1,QTY1|...|CODEn,QTYn|SUBTOTAL|DISCOUNT|TOTAL
+```
 
-    G --> G1[Reset toàn bộ\nTrain lại từ đầu\nvới dữ liệu đầy đủ]
+Ví dụ:
+```
+2026-04-23 19:00|1234|0901234567|P01,2|D01,1|145000|0|145000
+2026-04-23 19:12|1234|0938888888|A01,20|C01,5|G01,10|2525000|631250|1893750
+```
 
-    E1 --> H[Cập nhật snapshot]
-    F2 --> H
-    G1 --> H
-    H --> I([Hoàn tất])
+Khác với `orderHistory[u][i]` (chỉ là số đếm cho LFM, không nhớ thứ tự), file này **persist xuyên ca** và giữ chi tiết từng lần mua (món gì, bao nhiêu, tổng bao nhiêu). Không lưu tên khách — chỉ SDT + món.
+
+Dùng để:
+- Lookup khách A tháng trước mua gì: `grep "^.*|.*|0901234567|" data/transactions.log`
+- Thống kê món bán chạy theo ngày: `awk -F'|' '$1 ~ /2026-04-23/' data/transactions.log`
+- Phân tích xu hướng / báo cáo định kỳ
+
+## 8. Reset về "nhà hàng tươi"
+
+```bash
+rm -f data/lfm_*.dat data/users.dat data/personas.txt data/reports/*.txt data/transactions.log
+./build/seed_data.exe
 ```
 
 ---
 
-## Vòng đời đầy đủ của mô hình
+## 8. Xử lý sự cố
 
-Sơ đồ dưới mô tả toàn bộ các trạng thái mô hình có thể đi qua trong suốt quá trình vận hành:
+| Triệu chứng | Nguyên nhân | Khắc phục |
+|---|---|---|
+| `bind failed` / `Address already in use` | Port 8888 đang bị chiếm (server trước chưa đóng) | `taskkill /F /IM server.exe` (Windows) hoặc `pkill -f server.exe` |
+| `Cannot connect` (client) | Server chưa start hoặc firewall | Đảm bảo server chạy trước 1-2 giây, mở port 8888 trong firewall |
+| `Raw mode is not supported` (React Ink) | Terminal không phải TTY | Chạy trong terminal thật (PowerShell / Git Bash trực tiếp), không qua pipe |
+| Gợi ý toàn ra C01/C02/G01 giống nhau | Dùng init cũ [0, 0.01] positive-only | Đã fix trong Phase 4 — rebuild lại: `cmake --build build --clean-first` |
+| `seed_data: Khong mo duoc data/menu.txt` | Chạy sai thư mục | Phải chạy từ thư mục gốc dự án |
+| Node `Cannot find package 'tsx'` | Chưa `npm install` trong cli/ | `cd cli && npm install` |
 
-```mermaid
-sequenceDiagram
-    actor User as Người dùng
-    participant Sys as Hệ thống
+---
 
-    Note over Sys: Trạng thái: Chưa khởi tạo
+## 9. Cấu trúc dự án
 
-    User->>Sys: Cung cấp bảng rating ban đầu
-    Sys->>Sys: Train từ đầu
-    Sys->>Sys: Lưu snapshot
-    Sys-->>User: Mô hình sẵn sàng
-
-    Note over Sys: Trạng thái: Đã train
-
-    User->>Sys: Yêu cầu dự đoán rating
-    Sys-->>User: Trả về kết quả dự đoán
-
-    User->>Sys: Chỉnh sửa một số rating
-    Sys->>Sys: Đo mức độ thay đổi
-    Sys->>Sys: Chọn chiến lược cập nhật
-    Sys->>Sys: Cập nhật mô hình
-    Sys->>Sys: Lưu snapshot mới
-    Sys-->>User: Mô hình đã cập nhật
-
-    User->>Sys: Thêm user hoặc item mới
-    Sys->>Sys: Đo tỉ lệ mới / tổng
-    Sys->>Sys: Chọn chiến lược mở rộng
-    Sys->>Sys: Mở rộng mô hình
-    Sys->>Sys: Lưu snapshot mới
-    Sys-->>User: Mô hình đã mở rộng
-
-    Note over Sys: Trạng thái: Đã cập nhật\nSẵn sàng cho yêu cầu tiếp theo
+```
+├── CLAUDE.md                    ← Overview + index cho Claude Code
+├── README.md                    ← (file này)
+├── CMakeLists.txt               ← Build config
+├── phan-tich-du-an-702.md      ← Đặc tả đề tài gốc (1117 dòng)
+├── matrix_factorization.py     ← LFM reference Python
+│
+├── shared/    ← C++ code dùng chung (protocol, state, net, json, utils)
+├── server/    ← TCP server + session + LFM + file manager
+├── client/    ← TCP client + order builder + display
+├── cli/       ← React Ink UI Node.js (JSX) + ipc.js
+├── tools/     ← seed_data.cpp + demo.sh + pretty_event.mjs
+├── data/      ← menu.txt + users.dat + lfm_*.dat + reports/
+├── tests/     ← phase1_test.cpp smoke test
+└── docs/      ← ML_ENGINE_DESIGN.md (tài liệu thiết kế ML engine)
 ```
 
-**Nguyên tắc xuyên suốt trong thiết kế:**
+---
 
-- Snapshot được cập nhật sau mỗi thao tác, đảm bảo hệ thống luôn có cơ sở chính xác để so sánh.
-- Mọi chiến lược cập nhật đều tái sử dụng cùng một engine SGD với các tham số khác nhau — không có logic train riêng biệt cho từng trường hợp.
-- Early Stopping hoạt động tự động ở mọi luồng, không cần cấu hình thêm khi chuyển luồng.
+## 10. Tài liệu sâu hơn
+
+- [phan-tich-du-an-702.md](phan-tich-du-an-702.md) — đặc tả gốc: kiến trúc, business rules, protocol, LFM
+- [docs/ML_ENGINE_DESIGN.md](docs/ML_ENGINE_DESIGN.md) — thiết kế chi tiết Matrix Factorization (vòng đời, 3 luồng cập nhật, early stopping)
+- [matrix_factorization.py](matrix_factorization.py) — implementation LFM bằng Python (reference cho C++ port)
+- [.claude/knowledge/](.claude/knowledge/) — knowledge base chia theo chủ đề cho Claude Code subagents
+- [CLAUDE.md](CLAUDE.md) — overview dành cho Claude Code / AI assistants
+
+---
+
+## 11. Commands cheat-sheet
+
+```bash
+# Build tất cả
+cmake -S . -B build -G "MinGW Makefiles" && cmake --build build
+
+# Seed + demo nhanh
+./build/seed_data.exe && bash tools/demo.sh
+
+# Smoke test C++ core (không cần mạng)
+./build/phase1_test.exe
+
+# Smoke test IPC (cần server đang chạy)
+node cli/src/smoke_test.js
+
+# Verify gợi ý seed (cần server đang chạy)
+node cli/src/smoke_seed.js
+
+# Python reference (demo 5 bước update model)
+python matrix_factorization.py
+
+# React Ink UI thực sự (cần TTY)
+cd cli && npm start
+```

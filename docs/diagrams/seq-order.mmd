@@ -1,0 +1,36 @@
+sequenceDiagram
+    actor TN as Thu ngan
+    participant SRV as Server
+    participant C1 as Client (Ban 1)
+    actor KH as Khach
+
+    C1->>SRV: TCP Connect (port 8888)
+
+    TN->>SRV: open_session(code=1234)
+    SRV->>C1: START|1234|2026-04-23 10:00
+    SRV->>C1: MENU_DATA|P01,Pho Bo,65000|...
+
+    KH->>C1: Nhap SDT 0901234567
+    C1->>SRV: USER_LOGIN|1|0901234567
+    SRV->>SRV: getOrCreateUser → userId=5<br/>userName co san "Anh Nam"
+    SRV-->>C1: USER_ACK|5|false|22|Anh Nam
+    SRV-->>C1: SUGGEST|D01,2.74|P01,2.70|C01,1.48
+
+    KH->>C1: Nhap P01 2 (2 to Pho Bo)
+    C1->>SRV: ITEM_ADDED|1|5|P01|P01
+    SRV->>SRV: lfmGetTopK(exclude=[P01])
+    SRV-->>C1: SUGGEST|D01,2.74|C01,1.48|G01,...
+
+    KH->>C1: Nhap D01 1
+    C1->>SRV: ITEM_ADDED|1|5|D01|P01,D01
+
+    KH->>C1: Nhap 00 (xong)
+    C1->>C1: Tinh tam tinh = 145000d (chua giam)
+    KH->>C1: Y (xac nhan)
+    C1->>SRV: ORDER_SUBMIT|1|5|P01,2|D01,1|145000|0
+    SRV->>SRV: createOrder()<br/>lfmOnlineUpdate()<br/>saveTransactions()<br/>saveUsers()
+    SRV-->>C1: ORDER_ACK|1|OK
+
+    TN->>SRV: close_session(code=1234)
+    SRV->>C1: STOP|2026-04-23 22:00
+    SRV->>SRV: writeReport()<br/>lfmSaveModels()<br/>saveUsers()<br/>saveTransactions()
