@@ -55,7 +55,10 @@ Khi task chỉ liên quan một lĩnh vực, gọi subagent tương ứng để 
 
 ## Quy ước code bắt buộc
 
-1. **Parallel arrays** cho mọi dữ liệu — không dùng `struct` lồng sâu, không `std::vector` / STL nặng. Xem [06-data-structures.md](.claude/knowledge/06-data-structures.md).
+1. **Spring-style layered architecture** (`server/{controllers,services,repositories,dto,network,infra}/`) — Controller → Service → Repository → Database. Mọi component DI qua [server/infra/application_context.cpp](server/infra/application_context.cpp). Xem [12-spring-architecture.md](.claude/knowledge/12-spring-architecture.md).
+   - **Mini-DBMS OOP** là persistence layer (`shared/db/`) — Tables + Schema + B-tree/Hash/Fenwick. Xem [11-mini-dbms.md](.claude/knowledge/11-mini-dbms.md).
+   - Khi thêm bảng → update [shared/db/db_schema.cpp](shared/db/db_schema.cpp) + tạo `IXxxRepository`/`XxxRepository`.
+   - Khi thêm message type → update `shared/protocol.h` + controller + `MessageRouter::route`.
 2. **Input chỉ số + ASCII không dấu** (BR16) — mọi UI prompt phải tuân thủ. Xem [07-ux-cli-design.md](.claude/knowledge/07-ux-cli-design.md).
 3. **Ngôn ngữ hiển thị:** Server dashboard → **English** (staff-facing); Client UI → **Tiếng Việt có dấu** (customer-facing). Input vẫn ASCII only bất kể UI.
 4. **Mã món 3 ký tự** `[Prefix][2 chữ số]` (P01, B02, …). Prefix: P=Phở, B=Bún, C=Cơm, G=Gỏi, A=Ăn vặt, D=Đồ uống, T=Tráng miệng.

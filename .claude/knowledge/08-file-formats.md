@@ -1,189 +1,200 @@
 # 08 · File Formats
 
-Nguồn: [phan-tich-du-an-702.md](../../phan-tich-du-an-702.md) §16.
+Tài liệu này định nghĩa các định dạng file mà hệ thống đọc/ghi.
 
-## Báo cáo cuối ca — `data/reports/report_YYYY-MM-DD.txt`
+## 8.1 Tổng quan các loại file
 
-Text thuần, encoding UTF-8 hoặc ASCII-safe (không dấu trong phần header / tên món → dễ print). Mỗi ca 1 file.
+| File | Loại | Đọc bởi | Ghi bởi |
+|---|---|---|---|
+| `data/menu.txt` | Text input | `MenuService::loadFromFile` | (admin sửa thủ công) |
+| `data/*.tbl` | Binary table | `Database::openAll` | `Database::saveAll` |
+| `data/transactions.log` | Append-only text | (audit) | `OrderService::create` |
+| `data/reports/report_*.txt` | Text report | (con người đọc) | `ReportService::writeForCurrentSession` |
+| `data/personas.txt` | Text reference | (con người đọc) | `seed_data` tool |
 
-### Template đầy đủ
+## 8.2 Format `data/menu.txt`
 
-```
-==============================================================
-   BAO CAO NGAY 23/04/2026
-   Ma giao dich : 1234
-   Ca lam viec  : 07:00 - 22:00
-   So may ban   : 3
-==============================================================
-
-DON #001 | Ban 02 | SDT: 0901234567 | 09:15
---------------------------------------------------------------
-  P01  Pho Bo Tai    x2   65.000d  =  130.000d
-  D01  Tra Da        x2   15.000d  =   30.000d
-  Tam tinh: 160.000d | Giam: 0d | Tong: 160.000d
-  [Goi y LFM duoc dung: D01]
-
-DON #002 | Ban 01 | SDT: 0912345678 | 11:30
---------------------------------------------------------------
-  C01  Com Tam Suon Bi   x5   75.000d  =  375.000d
-  A01  Cha Gio           x20  80.000d  = 1.600.000d
-  G01  Goi Cuon          x10  55.000d  =   550.000d
-  Tam tinh: 2.525.000d | Giam 25%: 631.250d | Tong: 1.893.750d
-  [Goi y LFM duoc dung: A01, G01]
-
-==============================================================
-TONG KET NGAY
-  Tong so don        : 12
-  Tong doanh thu     : 8.340.000d
-  Tong giam gia      : 1.240.000d
-  Don duoc giam      : 3 / 12
-  So SDT khac nhau   : 9
-  Goi y LFM su dung  : 47 / 75 (63%)
-  Mon ban chay       : P01 (28 lan), C01 (19 lan), D01 (17 lan)
-==============================================================
-LFM MODEL STATS
-  Tong users da hoc  : 42
-  Latent dimensions  : K=10
-  Online updates     : 12 (ca nay)
-==============================================================
-```
-
-### Quy ước format
-
-- **Tiền:** `1.234.567d` (dấu `.` ngăn ngàn, `d` thay cho `đ`).
-- **Số lượng:** `x{qty}` ngay sau mã món. Padding 3 chữ số (vd `x20`).
-- **Thời gian:** `HH:MM` cho mỗi đơn, `DD/MM/YYYY` cho ngày.
-- **Mã gợi ý được dùng:** dòng `[Goi y LFM duoc dung: ...]` — liệt kê các mã trong đơn mà cũng có trong `SUGGEST` gần nhất.
-
-### Thuật toán tính "tỉ lệ chấp nhận gợi ý"
+Text plain, mỗi dòng 1 món:
 
 ```
-acceptRate = (số món trong tất cả đơn mà xuất hiện trong SUGGEST tại thời điểm chọn)
-           / (tổng số món được gợi ý trong ca)
-```
-
-Log mỗi lần gửi `SUGGEST` vào buffer + mỗi lần nhận `ITEM_ADDED` check xem code có trong SUGGEST gần nhất không.
-
-## Menu — `data/menu.txt`
-
-Text, mỗi dòng 1 món:
-
-```
-CODE|NAME|PRICE|CATEGORY
-```
-
-```
+# Comment dong dau bang #
 P01|Pho Bo Tai|65000|P
 P02|Pho Ga|55000|P
 B01|Bun Bo Hue|60000|B
 B02|Bun Rieu|55000|B
 C01|Com Tam Suon Bi|75000|C
-C02|Com Chien Duong Chau|65000|C
-G01|Goi Cuon (5 cuon)|55000|G
-A01|Cha Gio (10 cai)|80000|A
-D01|Tra Da|15000|D
-D02|Nuoc Ngot|20000|D
-T01|Che Ba Mau|25000|T
+...
 ```
 
-Comment: dòng bắt đầu bằng `#` bỏ qua.
+Field separator: `|`. 4 cột: `code | name | price | category`.
 
-## Users — `data/users.dat` (binary)
+## 8.3 Format `.tbl` (mini-DBMS table)
 
-Layout (format MỚI — không còn orderHistory, thêm name + desc):
+Mỗi bảng → 1 file `data/<name>.tbl` với layout:
 
-```
-[ int32 userCount ]
-[ char[11]  userPhone[userCount]       ]   // "0901234567\0"
-[ char[40]  userName[userCount]        ]   // "Nguyen Van A\0" (rỗng nếu chưa đăng ký)
-[ char[80]  userDesc[userCount]        ]   // mô tả tùy chọn, có thể rỗng
-[ int32     userTotalOrders[userCount] ]
-```
+```mermaid
+graph LR
+    H1["[16 bytes]<br/>magic<br/>'PBL1DBv1\\0...\\0'"] --> H2["[4 bytes]<br/>schema_hash<br/>(CRC32)"] --> H3["[4 bytes]<br/>row_count"] --> H4["[4 bytes]<br/>row_size_bytes"] --> R["[row_count × row_size_bytes]<br/>fixed-width rows"]
 
-`orderHistory[][]` giờ được derive từ `transactions.dat` qua `rebuildOrderHistory()` ở startup.
-
-## Transactions — `data/transactions.dat` (binary, MỚI)
-
-Source of truth cho per-order history. Persistent xuyên ca.
-
-```
-[ int32 txnCount ]
-[ int32    txnUserIdx[txnCount]                        ]
-[ char[20] txnTime[txnCount]                           ]   // "YYYY-MM-DD HH:MM:SS"
-[ char[10] txnSessionCode[txnCount]                    ]
-[ int32    txnItemCount[txnCount]                      ]
-[ char[4]  txnItemCode[txnCount][MAX_ITEMS]            ]   // MAX_ITEMS=5
-[ int32    txnItemQty [txnCount][MAX_ITEMS]            ]
-[ float    txnSubtotal[txnCount]                       ]
-[ float    txnDiscount[txnCount]                       ]
-[ float    txnTotal[txnCount]                          ]
+    style H1 fill:#fef3c7
+    style H2 fill:#fed7aa
+    style H3 fill:#fbcfe8
+    style H4 fill:#ddd6fe
+    style R fill:#bbf7d0
 ```
 
-**Tạo / load:** [server/transaction_store.cpp](../../server/transaction_store.cpp). `appendTransaction()` push 1 txn; `saveTransactions()` / `loadTransactions()` xử lý binary.
+### 8.3.1 Header (28 bytes)
 
-## Transactions log — `data/transactions.log` (text, audit trail)
+| Offset | Kích thước | Trường | Mô tả |
+|---|---|---|---|
+| 0 | 16 | magic | `"PBL1DBv1"` + 8 bytes 0 (sentinel để verify file đúng format) |
+| 16 | 4 | schema_hash | CRC32 của (column name + type + size) — phát hiện schema mismatch |
+| 20 | 4 | row_count | Số row đang lưu (uint32 LE) |
+| 24 | 4 | row_size_bytes | Tổng bytes 1 row theo schema (uint32 LE) |
 
-Append-only text, human-readable, giữ song song với `transactions.dat`. Format mỗi dòng:
+### 8.3.2 Body — fixed-width rows
+
+Mỗi row là chuỗi cột nối tiếp, không padding giữa cột (chỉ có padding bên trong STR/BLOB nếu chuỗi ngắn hơn `column.size`):
+
+| Type | Bytes | Encoding |
+|---|---|---|
+| `INT64` | 8 | little-endian signed |
+| `DOUBLE` | 8 | IEEE 754 little-endian |
+| `STR(N)` | N | UTF-8/ASCII, null-padded; reader trim ở first NUL |
+| `BLOB(N)` | N | raw bytes, **không** trim NUL |
+
+### 8.3.3 Ví dụ — `users.tbl` (155 bytes/row)
+
+| Offset | Bytes | Cột |
+|---|---|---|
+| 0 | 8 | user_id (INT64) |
+| 8 | 11 | phone (STR) |
+| 19 | 40 | name (STR) |
+| 59 | 80 | description (STR) |
+| 139 | 8 | total_orders (INT64) |
+| 147 | 8 | created_at (INT64) |
+
+Reader JS phía dashboard ([cli/src/tbl_reader.mjs](../../cli/src/tbl_reader.mjs)) parse đúng layout này.
+
+### 8.3.4 Ví dụ — `lfm_p.tbl` (48 bytes/row)
+
+| Offset | Bytes | Cột |
+|---|---|---|
+| 0 | 8 | user_id (INT64) |
+| 8 | 40 | vec (BLOB = K=10 floats) |
+
+### 8.3.5 Schema hash CRC32
+
+```cpp
+// shared/db/schema.cpp::Schema::hash()
+uint32_t Schema::hash() const {
+    uint32_t c = 0xFFFFFFFF;
+    for (const auto& col : columns_) {
+        c = crc32_buf(col.name, c);          // tên cột
+        c = crc32_buf(&col.type, 1, c);      // type byte
+        c = crc32_buf(&col.size, 2, c);      // size 2 bytes
+    }
+    return c ^ 0xFFFFFFFF;
+}
+```
+
+Nếu file `.tbl` cũ không match hash → `Table::loadFromFile` từ chối load
+(không silent corrupt).
+
+## 8.4 Index persistence
+
+**Indexes KHÔNG được lưu trên file** — luôn rebuild từ rows khi `Table::loadFromFile()`.
+Lý do:
+- Đơn giản format file (không phải lo serialize hash bucket / B-tree node).
+- Rebuild cost nhỏ — 5000 rows × 1µs/insert ≈ 5ms khi server start.
+- Tránh divergence khi rows thay đổi mà index chưa update.
+
+## 8.5 Format `data/transactions.log`
+
+Append-only text, 1 dòng/đơn:
 
 ```
 TIMESTAMP|SESSION_CODE|PHONE|CODE1,QTY1|...|CODEn,QTYn|SUBTOTAL|DISCOUNT|TOTAL
 ```
 
-Dùng để dev debug / inspect bằng mắt. Dashboard server có thể parse (đơn giản hơn binary) hoặc đọc `transactions.dat`.
+Ví dụ:
+```
+2026-04-23 19:00:23|1234|0901234567|P01,2|D01,1|145000|0|145000
+2026-04-23 19:12:01|1234|0938888888|A01,20|C01,5|G01,10|2525000|631250|1893750
+```
 
-## Nhịp độ ghi file (runtime)
+Đây là **audit trail** dạng text — không re-parse vào hệ thống. Dùng cho:
+- `grep` debug nhanh: "khách 0901234567 tháng trước mua gì?"
+- `awk` thống kê theo ngày/SDT.
 
-Để dashboard đọc được dữ liệu **live** trong phiên, không phải đợi đóng ca:
+## 8.6 Format báo cáo cuối ca
 
-| Sự kiện | File được ghi ngay |
-|---|---|
-| `USER_REGISTER` thành công | `users.dat` (name + desc) |
-| `ORDER_SUBMIT` thành công | `users.dat` (totalOrders++) + `transactions.dat` + `transactions.log` |
-| `closeSession` | `users.dat` + `transactions.dat` + `lfm_P/Q.dat` + `report_*.txt` |
-| `openSession` | (nothing — startup data đã load từ đĩa ở process start) |
+`data/reports/report_YYYY-MM-DD.txt`:
 
-Xem [server/socket_server.cpp](../../server/socket_server.cpp) `handleOrderSubmit` (gọi `saveTransactions + saveUsers` ngay sau `lfmOnlineUpdate`) và `handleUserRegister` (gọi `saveUsers` sau `setUserName`).
+```
+==============================================================
+   BAO CAO NGAY 2026-05-06
+   Ma giao dich : 1234
+   Ca lam viec  : 2026-05-06 09:00:00 - 2026-05-06 22:30:00
+==============================================================
 
-## Tool đọc file binary
+DON #001 | SDT: 0901234567 | 2026-05-06 09:15:30
+--------------------------------------------------------------
+  P01  Pho Bo Tai          x1      65000 =       65000
+  D01  Tra Da             x2      15000 =       30000
+  Tam tinh: 95000 | Giam: 0 | Tong: 95000
 
-[tools/dump_data.mjs](../../tools/dump_data.mjs) — Node.js script parse `users.dat` + `transactions.dat` + `menu.txt`, in ra text human-readable group-by-user (giống `personas.txt` nhưng phản ánh state runtime hiện tại).
+DON #002 | SDT: 0938888888 | 2026-05-06 19:12:01
+--------------------------------------------------------------
+  A01  Cha Gio (10 cai)   x20      80000 =     1600000
+  C01  Com Tam Suon Bi    x5      75000 =      375000
+  G01  Goi Cuon (5 cuon)  x10      55000 =      550000
+  Tam tinh: 2525000 | Giam: 631250 | Tong: 1893750
+
+... (cac don khac) ...
+
+==============================================================
+TONG KET NGAY
+  Tong so don        : 42
+  Tong doanh thu     : 2.850.000
+  Tong giam gia      :   200.000
+  Don duoc giam      : 5 / 42
+  So SDT khac nhau   : 38
+  Mon ban chay       : P01 (85 lan), B01 (62 lan), C01 (45 lan)
+==============================================================
+LFM MODEL STATS
+  Tong users da hoc  : 38
+  Latent dimensions  : K=10
+==============================================================
+```
+
+Top-3 món bán chạy được tính bằng `std::sort` trên `unordered_map<itemCode, count>`.
+Trong tương lai có thể dùng `FenwickTree` per item để query nhanh hơn (xem [11-mini-dbms.md](11-mini-dbms.md)).
+
+## 8.7 File `personas.txt` (seed reference)
+
+Sinh bởi `seed_data.exe` để dev kiểm tra dữ liệu mẫu:
+
+```
+0901234567 | Anh Nam    | 22 don | Dan van phong, sang Pho Bo + Tra Da
+   Don  1 (2026-02-05 09:00:00): P01 x1, B01 x1 = 125000d
+   Don  2 (2026-02-08 10:00:00): D01 x2, P01 x1 = 95000d
+   ...
+   Goi y LFM:  D01 (3.388), P01 (3.382), C01 (1.998)
+
+0912345678 | Chi Lan    | 20 don | Sinh vien, trua Com Tam + Nuoc Ngot
+   ...
+```
+
+Không persistent (sinh lại mỗi lần seed) — chỉ để con người đọc.
+
+## 8.8 Migration tool
+
+`tools/migrate_legacy.cpp` đọc legacy `.dat` (format cũ) → ghi `.tbl` mới qua repositories.
+Chạy 1 lần khi nâng cấp:
 
 ```bash
-# Từ gốc project:
-node tools/dump_data.mjs                        # in ra console
-node tools/dump_data.mjs > data/snapshot.txt    # lưu file
+./build/migrate_legacy.exe data/
 ```
 
-Khác với `personas.txt`:
-- `personas.txt` là **snapshot tạo 1 lần** bởi `seed_data.exe` — không cập nhật runtime.
-- `dump_data.mjs` đọc **realtime từ `.dat`** → thấy cả user đăng ký sau seed + đơn đặt runtime.
-
-## LFM models — `data/lfm_P.dat`, `data/lfm_Q.dat` (binary)
-
-`lfm_P.dat`:
-```
-[ int32 userCount ]
-[ int32 K         ]
-[ float P[userCount][K]  ]   // row-major
-```
-
-`lfm_Q.dat`:
-```
-[ int32 menuCount ]
-[ int32 K         ]
-[ float Q[menuCount][K]  ]
-```
-
-**Load khi mở ca:**
-1. Nếu file không tồn tại → init `P[][] = rand(0, 0.01)`, `Q[][] = rand(0, 0.01)`.
-2. Nếu `K` trong file khác `K` hiện tại → bỏ file cũ, init lại.
-3. Nếu `userCount` / `menuCount` trong file nhỏ hơn hiện tại → load phần có sẵn, phần dư init ngẫu nhiên + chạy `lfm_add_user()` / `lfm_add_item()`.
-
-**Save khi đóng ca:**
-- Ghi atomic: ghi ra `.tmp` → rename → tránh mất dữ liệu nếu crash giữa chừng.
-
-## Naming file báo cáo
-
-- Một ca / ngày: `report_2026-04-23.txt`.
-- Hai ca cùng ngày: `report_2026-04-23_01.txt`, `report_2026-04-23_02.txt` (suffix `_NN` theo thứ tự).
-- Trong thư mục [data/reports/](../../data/reports/).
+Sau khi xong, có thể xóa `*.dat` và backup nếu muốn.

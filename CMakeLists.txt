@@ -6,56 +6,108 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 include_directories(${CMAKE_SOURCE_DIR}/shared ${CMAKE_SOURCE_DIR}/server)
 
-# Winsock2 on Windows
 if (WIN32)
     link_libraries(ws2_32)
 endif()
 
-# -----------------------------------------------------------------------------
-# Phase 1: core (no network)
-# -----------------------------------------------------------------------------
+# =============================================================================
+# Layer 1: Mini-DBMS — Tables + B-tree/Hash/Fenwick indexes
+# =============================================================================
 
-set(CORE_SOURCES
+set(DB_SOURCES
+    shared/db/value.cpp
+    shared/db/schema.cpp
+    shared/db/codec.cpp
+    shared/db/row.cpp
+    shared/db/hash_index.cpp
+    shared/db/btree_index.cpp
+    shared/db/fenwick.cpp
+    shared/db/table.cpp
+    shared/db/database.cpp
+    shared/db/db_schema.cpp
+)
+
+# =============================================================================
+# Layer 2: Repositories — abstract qua Database, mỗi entity 1 repo
+# =============================================================================
+
+set(REPOSITORY_SOURCES
+    server/repositories/user_repository.cpp
+    server/repositories/menu_repository.cpp
+    server/repositories/transaction_repository.cpp
+    server/repositories/lfm_repository.cpp
+    server/repositories/session_repository.cpp
+)
+
+# =============================================================================
+# Layer 3: Services — business logic (Auth, Menu, Order, Lfm, Session, Report)
+# =============================================================================
+
+set(SERVICE_SOURCES
+    server/services/menu_service.cpp
+    server/services/auth_service.cpp
+    server/services/lfm_service.cpp
+    server/services/order_service.cpp
+    server/services/session_service.cpp
+    server/services/report_service.cpp
+)
+
+# =============================================================================
+# Layer 4: Controllers + Network + Infrastructure (DI, listeners, lifecycle)
+# =============================================================================
+
+set(CONTROLLER_SOURCES
+    server/controllers/auth_controller.cpp
+    server/controllers/order_controller.cpp
+    server/controllers/heartbeat_controller.cpp
+)
+
+set(NETWORK_SOURCES
+    server/network/protocol_codec.cpp
+    server/network/tcp_server.cpp
+    server/network/message_router.cpp
+)
+
+set(INFRA_SOURCES
+    server/infra/text_log_listener.cpp
+    server/infra/json_event_listener.cpp
+    server/infra/session_lifecycle.cpp
+    server/infra/application_context.cpp
+)
+
+# =============================================================================
+# Shared sources (used by all targets)
+# =============================================================================
+
+set(SHARED_SOURCES
     shared/state.cpp
     shared/utils.cpp
     shared/protocol.cpp
     shared/json.cpp
-    server/menu.cpp
-    server/phone_validator.cpp
-    server/user_store.cpp
-    server/transaction_store.cpp
-    server/order_store.cpp
-    server/lfm.cpp
-    server/file_manager.cpp
-    server/session.cpp
 )
 
-add_executable(phase1_test
-    tests/phase1_test.cpp
-    ${CORE_SOURCES}
-)
-
-# -----------------------------------------------------------------------------
-# Phase 4: Seed data generator — tao users.dat + lfm_*.dat mau
-# -----------------------------------------------------------------------------
-
-add_executable(seed_data
-    tools/seed_data.cpp
-    ${CORE_SOURCES}
-)
-
-# -----------------------------------------------------------------------------
-# Phase 2: networking (server + client)
-# -----------------------------------------------------------------------------
+# =============================================================================
+# Server: full layered stack
+# =============================================================================
 
 add_executable(server
     server/main_server.cpp
-    server/socket_server.cpp
     shared/net.cpp
-    ${CORE_SOURCES}
+    ${SHARED_SOURCES}
+    ${DB_SOURCES}
+    ${REPOSITORY_SOURCES}
+    ${SERVICE_SOURCES}
+    ${CONTROLLER_SOURCES}
+    ${NETWORK_SOURCES}
+    ${INFRA_SOURCES}
+    server/menu.cpp                 # legacy free-fn shims (used by tools)
+    server/phone_validator.cpp
 )
 
-# Client only uses Phase 1 core thanks to shared/state.cpp
+# =============================================================================
+# Client: minimal subset
+# =============================================================================
+
 add_executable(client
     client/main_client.cpp
     client/socket_client.cpp
@@ -63,10 +115,50 @@ add_executable(client
     client/input_handler.cpp
     client/display.cpp
     shared/net.cpp
-    shared/state.cpp
-    shared/utils.cpp
-    shared/protocol.cpp
-    shared/json.cpp
+    ${SHARED_SOURCES}
+    ${DB_SOURCES}
+    server/menu.cpp
+    server/phone_validator.cpp
+)
+
+# =============================================================================
+# Smoke test (exercises core db + repos + services)
+# =============================================================================
+
+add_executable(phase1_test
+    tests/phase1_test.cpp
+    ${SHARED_SOURCES}
+    ${DB_SOURCES}
+    ${REPOSITORY_SOURCES}
+    ${SERVICE_SOURCES}
+    server/menu.cpp
+    server/phone_validator.cpp
+)
+
+# =============================================================================
+# Seed data generator
+# =============================================================================
+
+add_executable(seed_data
+    tools/seed_data.cpp
+    ${SHARED_SOURCES}
+    ${DB_SOURCES}
+    ${REPOSITORY_SOURCES}
+    ${SERVICE_SOURCES}
+    server/menu.cpp
+    server/phone_validator.cpp
+)
+
+# =============================================================================
+# Migration tool: legacy .dat → .tbl
+# =============================================================================
+
+add_executable(migrate_legacy
+    tools/migrate_legacy.cpp
+    ${SHARED_SOURCES}
+    ${DB_SOURCES}
+    ${REPOSITORY_SOURCES}
+    ${SERVICE_SOURCES}
     server/menu.cpp
     server/phone_validator.cpp
 )

@@ -1,126 +1,178 @@
 # 04 · Network Protocol
 
-Nguồn: [phan-tich-du-an-702.md](../../phan-tich-du-an-702.md) §8.
+Giao thức trao đổi giữa Server và Client trên TCP/IP cổng **8888**.
 
-## Format tin nhắn
+## 4.1 Format thông điệp
 
 ```
 [LOAI_LENH]|[NOI_DUNG]\n
 ```
 
-- Delimiter field: `|`
-- Terminator message: `\n`
-- Encoding: ASCII (không Vietnamese có dấu trong payload)
-- Port mặc định: **8888**
+| Đặc trưng | Giá trị |
+|---|---|
+| Encoding | ASCII (không Vietnamese có dấu trong payload) |
+| Field separator (trong nội dung) | `|` |
+| Message terminator | `\n` (LF) |
+| Max length 1 message | 2048 bytes |
+| Port mặc định | 8888 |
 
-## Bảng 10 lệnh đầy đủ
+### Lý do chọn dạng text-line
 
-### Server → Client
+- Đơn giản để debug (`netcat`, `telnet` đọc được).
+- `\n` framing dễ tách ra khỏi TCP stream (đỉ ốt buffer cho đến khi gặp newline).
+- Không cần thư viện serialization (Protocol Buffers, FlatBuffers...) — phù hợp ràng buộc đề bài.
 
-| Lệnh | Nội dung | Mô tả |
+## 4.2 Bảng 11 lệnh đầy đủ
+
+### 4.2.1 Server → Client
+
+| Lệnh | Payload | Mô tả |
 |---|---|---|
-| `START` | `sessionCode\|dateTime` | Mở ca, Client bắt đầu hoạt động |
-| `MENU_DATA` | `P01,Pho Bo,65000\|B01,Bun Bo,60000\|...` | Gửi danh sách menu |
-| `USER_ACK` | `userId\|isNew\|orderCount\|name` | Xác nhận SDT + info khách (`name` rỗng nếu chưa đăng ký) |
-| `SUGGEST` | `P01,0.92\|D01,0.87\|G01,0.71` | Top-3 gợi ý từ LFM (chỉ gửi khi khách đã có tên) |
-| `ORDER_ACK` | `orderId\|OK` | Xác nhận đã nhận đơn |
+| `START` | `sessionCode\|dateTime` | Mở ca → client bắt đầu hoạt động |
+| `MENU_DATA` | `P01,Pho Bo,65000\|B01,Bun Bo,60000\|...` | Danh sách menu |
+| `USER_ACK` | `userId\|isNew\|orderCount\|name` | Xác nhận login |
+| `SUGGEST` | `P01,0.92\|D01,0.87\|G01,0.71` | Top-3 gợi ý LFM |
+| `ORDER_ACK` | `orderId\|OK` hoặc `0\|FAIL` | Phản hồi submit |
 | `STOP` | `dateTime` | Đóng ca |
 
-### Client → Server
+### 4.2.2 Client → Server
 
-| Lệnh | Nội dung | Mô tả |
+| Lệnh | Payload | Mô tả |
 |---|---|---|
 | `USER_LOGIN` | `clientId\|phoneNumber` | Khách nhập SDT |
-| `USER_REGISTER` | `clientId\|phone\|name\|desc` | Khách mới gửi tên (ASCII bắt buộc) + mô tả (tùy chọn, có thể rỗng) |
-| `ITEM_ADDED` | `clientId\|userId\|itemCode\|currentCodes` | Khách thêm 1 món (trigger gợi ý lại) |
+| `USER_REGISTER` | `clientId\|phone\|name\|desc` | Khách mới đăng ký tên |
+| `ITEM_ADDED` | `clientId\|userId\|itemCode\|currentCodes` | Trigger gợi ý lại |
 | `ORDER_SUBMIT` | `clientId\|userId\|P01,2\|D01,1\|total\|discount` | Đơn hoàn chỉnh |
-| `HEARTBEAT` | `clientId\|timestamp` | Kiểm tra kết nối mỗi 5s |
+| `HEARTBEAT` | `clientId\|timestamp` | Kiểm tra kết nối (5s/lần) |
 
-### Luồng đăng ký khách mới
+## 4.3 Sequence diagram tiêu biểu
 
-1. `USER_LOGIN|1|0901234567` → server phát hiện `userName[userId][0]==0` → trả `USER_ACK|5|true|0|` (name rỗng).
-2. Client thấy `isNew=true` → hiển thị `NameInput.jsx` → người dùng nhập tên + (tùy chọn) mô tả.
-3. `USER_REGISTER|1|0901234567|Nguyen Van A|Dan van phong` → server `setUserName()` + `saveUsers()` → trả `USER_ACK|5|false|0|Nguyen Van A` + `SUGGEST`.
-4. Lần login sau (kể cả session khác), `isNew=false` luôn (vì userName đã có) → bỏ qua NameInput.
-
-## Sequence diagram tiêu biểu
+### 4.3.1 Khách quen đặt món
 
 ```mermaid
 sequenceDiagram
-    actor TN as Thu ngân
+    actor TN as Thu ngan
     participant SRV as Server
     participant C1 as Client Ban 1
 
-    C1->>SRV: TCP Connect
-    SRV-->>C1: CONNECTED|clientId=1
+    C1->>SRV: TCP Connect (slot=0)
+    SRV-->>C1: (chua broadcast START vi session chua mo)
 
-    TN->>SRV: Nhập mã số mở ca: 1234
-    SRV->>C1: START|1234|23/04/2026
+    TN->>SRV: stdin "1234"
+    SRV->>SRV: SessionLifecycle.start(1234)
+    SRV->>C1: START|1234|2026-05-06 09:00
     SRV->>C1: MENU_DATA|P01,Pho Bo,65000|...
 
-    Note over C1: Khách nhập SDT 0901234567
+    Note over C1: Khach nhap SDT 0901234567
     C1->>SRV: USER_LOGIN|1|0901234567
-    SRV->>SRV: Tra SDT → userId=5 (quen, 3 đơn)
-    SRV->>SRV: Tính LFM scores
-    SRV-->>C1: USER_ACK|5|false|3
-    SRV-->>C1: SUGGEST|C01,0.91|D01,0.85|T01,0.72
+    SRV->>SRV: AuthService.getOrCreate
+    SRV->>SRV: LfmService.topK(userId, [], 3)
+    SRV-->>C1: USER_ACK|5|false|22|Anh Nam
+    SRV-->>C1: SUGGEST|P01,2.74|D01,2.70|C01,1.48
 
-    Note over C1: Khách thêm P01
+    Note over C1: Khach them P01
     C1->>SRV: ITEM_ADDED|1|5|P01|P01
-    SRV-->>C1: SUGGEST|D01,0.85|G01,0.78|T01,0.72
+    SRV->>SRV: LfmService.topK(userId, [P01], 3)
+    SRV-->>C1: SUGGEST|D01,2.70|C01,1.48|B01,1.20
 
-    Note over C1: Khách xác nhận Y
+    Note over C1: Khach xac nhan
     C1->>SRV: ORDER_SUBMIT|1|5|P01,2|D01,1|145000|0
-    SRV->>SRV: Lưu đơn, chạy online SGD
-    SRV-->>C1: ORDER_ACK|007|OK
+    SRV->>SRV: OrderService.create
+    SRV->>SRV: LfmService.onlineUpdate
+    SRV->>SRV: Database.saveAll (persist .tbl)
+    SRV-->>C1: ORDER_ACK|123|OK
 
-    TN->>SRV: Nhập mã số đóng ca: 1234
-    SRV->>C1: STOP|22:00
-    SRV->>SRV: Xuất báo cáo + lưu P,Q
+    TN->>SRV: stdin "1234" (dong ca)
+    SRV->>C1: STOP|2026-05-06 22:00
+    SRV->>SRV: ReportService.write report.txt
 ```
 
-## Parser skeleton (C++)
+### 4.3.2 Khách mới đăng ký
+
+```mermaid
+sequenceDiagram
+    actor KH as Khach moi
+    participant CLI
+    participant SRV
+    participant USERS as users table
+
+    KH->>CLI: SDT 0987654321 (chua co trong db)
+    CLI->>SRV: USER_LOGIN|1|0987654321
+    SRV->>USERS: findByPhone(0987654321) → null
+    SRV->>USERS: insert(userId=10, name=empty)
+    SRV->>CLI: USER_ACK|10|true|0|
+
+    Note over CLI: isNew=true → hien NameInput
+
+    KH->>CLI: Ten "Tester", desc "Khach moi"
+    CLI->>SRV: USER_REGISTER|1|0987654321|Tester|Khach moi
+    SRV->>USERS: updateName(10, Tester, Khach moi)
+    SRV->>CLI: USER_ACK|10|false|0|Tester
+    SRV->>CLI: SUGGEST|... (cold-start: top global)
+```
+
+## 4.4 Parser implementation
+
+[shared/protocol.cpp](../../shared/protocol.cpp) cung cấp 2 hàm chính:
 
 ```cpp
-// shared/protocol.h
-enum MsgType {
-    MSG_UNKNOWN = 0,
-    MSG_START, MSG_STOP, MSG_MENU_DATA, MSG_USER_ACK,
-    MSG_SUGGEST, MSG_ORDER_ACK,
-    MSG_USER_LOGIN, MSG_ITEM_ADDED, MSG_ORDER_SUBMIT, MSG_HEARTBEAT,
-    MSG_USER_REGISTER
-};
-
-struct ParsedMsg {
-    MsgType type;
-    char    payload[1024];   // phần sau dấu '|' đầu tiên
-};
-
-// Trả về false nếu raw không kết thúc bằng '\n' hoặc format sai.
 bool parseMessage(const char* raw, ParsedMsg* out);
-
-// Build string "TYPE|payload\n" vào buffer.
-int buildMessage(MsgType type, const char* payload, char* out, int outCap);
+int  buildMessage(MsgType type, const char* payload, char* out, int cap);
 ```
 
-## Nguyên tắc triển khai
+`ParsedMsg` struct:
 
-1. **Receiver phải buffer** cho đến khi gặp `\n` mới parse — không giả định `recv()` trả về đủ 1 message.
-2. **Không trust Client** — server validate lại:
-   - SDT: 10 chữ số, bắt đầu `0`.
-   - Mã món: tồn tại trong `menuCode[]`.
-   - Số lượng: > 0, ≤ 99.
-   - Tổng ≤ 5 món / đơn.
-3. **Session gate (defense-in-depth):** Mọi handler ngoại trừ `HEARTBEAT` check `isSessionOpen()` ngay đầu vào — drop silent hoặc trả `FAIL` nếu session chưa mở. Xem [09-state-machines.md](09-state-machines.md).
-4. **Heartbeat timeout:** nếu > 15s không nhận heartbeat từ một Client → đánh dấu disconnected.
-5. **Reconnect:** Client tự retry connect 3 lần cách nhau 2s nếu socket đứt.
-6. **Order response order:** `USER_ACK` luôn gửi **trước** `SUGGEST` (Client chờ userId trước khi hiển thị panel gợi ý). Với khách mới (`isNew=true`), **SUGGEST không gửi ngay** — phải đợi `USER_REGISTER` xong mới gửi `USER_ACK` mới + `SUGGEST`.
-7. **Persist-on-order:** Server gọi `saveTransactions + saveUsers` ngay sau mỗi `ORDER_SUBMIT` thành công để dashboard đọc được dữ liệu live xuyên phiên.
+```cpp
+struct ParsedMsg {
+    MsgType type;          // enum MsgType
+    char    payload[1024]; // phan sau dau '|' dau tien
+};
+```
 
-## Khi thêm lệnh mới
+Wrapper OOP cho codec ở [server/network/protocol_codec.h](../../server/network/protocol_codec.h)
+(class `ProtocolCodec`).
 
-Cập nhật đồng thời:
-- [04-network-protocol.md](04-network-protocol.md) (file này)
-- `shared/protocol.h` — thêm enum + struct payload
-- `server/socket_server.cpp` — thêm handler
-- `client/socket_client.cpp` — thêm sender / listener
+## 4.5 Routing trên server
+
+```mermaid
+graph LR
+    A[Raw bytes] --> B[TcpServer.recvLoop]
+    B --> C{Tach \\n}
+    C --> D[1 line]
+    D --> E[ProtocolCodec.parse]
+    E --> F{ParsedMsg.type}
+    F -->|USER_LOGIN| G1[AuthController.handleLogin]
+    F -->|USER_REGISTER| G2[AuthController.handleRegister]
+    F -->|ITEM_ADDED| G3[OrderController.handleItemAdded]
+    F -->|ORDER_SUBMIT| G4[OrderController.handleOrderSubmit]
+    F -->|HEARTBEAT| G5[HeartbeatController.handleHeartbeat]
+    G1 --> H[Service layer]
+    G2 --> H
+    G3 --> H
+    G4 --> H
+    G5 --> H
+```
+
+Cài đặt routing: [server/network/message_router.cpp](../../server/network/message_router.cpp).
+
+## 4.6 Nguyên tắc triển khai
+
+| Quy tắc | Lý do |
+|---|---|
+| **Receiver phải buffer đến `\n`** | TCP có thể chia 1 message thành nhiều `recv()` |
+| **Server không trust Client** | Validate SDT, mã món, số lượng, max items mỗi đơn |
+| **Session gate** | Mọi handler ≠ HEARTBEAT phải kiểm tra `sessionService.isOpen()` |
+| **Heartbeat timeout 15s** | Không nhận heartbeat sau 15s → đánh dấu disconnect |
+| **Reconnect 3 lần** | Client tự retry connect với khoảng cách 2s |
+| **Order response order** | `USER_ACK` luôn gửi **trước** `SUGGEST` |
+| **Persist-on-order** | Sau mỗi `ORDER_SUBMIT` thành công, server gọi `Database.saveAll` |
+
+## 4.7 Khi thêm lệnh mới
+
+Cập nhật đồng bộ:
+
+1. [shared/protocol.h](../../shared/protocol.h) — thêm enum value
+2. [shared/protocol.cpp](../../shared/protocol.cpp) — thêm tên vào `NAMES[]`
+3. [server/network/message_router.cpp](../../server/network/message_router.cpp) — thêm case
+4. Tạo handler trong controller phù hợp
+5. Cập nhật file này (04-network-protocol.md)

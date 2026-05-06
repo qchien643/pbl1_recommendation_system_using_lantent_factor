@@ -1,122 +1,211 @@
 # 09 · State Machines
 
-Nguồn: [phan-tich-du-an-702.md](../../phan-tich-du-an-702.md) §12, §13.
+Tài liệu trình bày state machines của 2 actor chính: **Server** và **Client**.
 
-## State machine — Client (Bàn khách)
-
-```mermaid
-stateDiagram-v2
-    [*] --> CONNECTING : Khoi dong --client IP
-    CONNECTING --> WAITING : TCP ket noi thanh cong
-    CONNECTING --> ERROR : Khong the ket noi
-
-    WAITING --> PHONE_INPUT : Nhan START tu Server
-
-    PHONE_INPUT --> PHONE_VALIDATING : Khach nhap 10 chu so
-    PHONE_VALIDATING --> PHONE_INPUT : SDT sai dinh dang
-    PHONE_VALIDATING --> LOADING_SUGGEST : SDT hop le, gui USER_LOGIN
-
-    LOADING_SUGGEST --> NAME_INPUT : USER_ACK isNew=true (khach moi, chua co ten)
-    LOADING_SUGGEST --> ORDERING : USER_ACK isNew=false + SUGGEST
-
-    NAME_INPUT --> REGISTERING : Khach nhap ten + Enter\ngui USER_REGISTER
-    REGISTERING --> ORDERING : Nhan USER_ACK moi + SUGGEST
-
-    ORDERING --> ORDERING : Nhap ma mon hop le → them vao don → nhan SUGGEST moi
-    ORDERING --> ORDERING : Ma mon sai → hien loi, cho nhap lai
-    ORDERING --> CHECKOUT : Nhap 00 hoac du 5 mon
-
-    CHECKOUT --> SUBMITTING : Khach nhan Y / Enter
-    CHECKOUT --> ORDERING : Khach nhan N (sua don)
-
-    SUBMITTING --> PHONE_INPUT : Nhan ORDER_ACK
-
-    PHONE_INPUT --> CLOSED : Nhan STOP
-    ORDERING --> CLOSED : Nhan STOP
-    CLOSED --> [*]
-    ERROR --> [*]
-```
-
-### Bảng chuyển trạng thái Client
-
-| Từ | Sự kiện | Sang | Action |
-|---|---|---|---|
-| `CONNECTING` | Socket connect OK | `WAITING` | Bắt đầu heartbeat |
-| `CONNECTING` | Socket error | `ERROR` | In lỗi, thoát |
-| `WAITING` | Nhận `START` | `PHONE_INPUT` | Hiển thị PhoneInput |
-| `PHONE_INPUT` | Enter 10 số | `PHONE_VALIDATING` | Validate |
-| `PHONE_VALIDATING` | OK | `LOADING_SUGGEST` | Send `USER_LOGIN` |
-| `PHONE_VALIDATING` | Fail | `PHONE_INPUT` | Hiển thị lỗi inline |
-| `LOADING_SUGGEST` | Nhận `USER_ACK` với `isNew=true` | `NAME_INPUT` | Hiển thị `NameInput` component |
-| `LOADING_SUGGEST` | Nhận `USER_ACK` với `isNew=false` + `SUGGEST` | `ORDERING` | Show menu + panel, chào bằng tên |
-| `NAME_INPUT` | Enter name + optional desc | `REGISTERING` | Send `USER_REGISTER` |
-| `REGISTERING` | Nhận `USER_ACK` mới + `SUGGEST` | `ORDERING` | Show menu + panel |
-| `ORDERING` | Thêm món hợp lệ | `ORDERING` | Send `ITEM_ADDED` |
-| `ORDERING` | Nhập `00` hoặc count=5 | `CHECKOUT` | Show Invoice |
-| `CHECKOUT` | Press `Y` / Enter | `SUBMITTING` | Send `ORDER_SUBMIT` |
-| `CHECKOUT` | Press `N` | `ORDERING` | Giữ đơn, cho sửa |
-| `SUBMITTING` | Nhận `ORDER_ACK` | `PHONE_INPUT` | Reset, sẵn sàng khách mới |
-| `PHONE_INPUT` / `ORDERING` | Nhận `STOP` | `CLOSED` | Show "Ca ket thuc" |
-
-## State machine — Server (Thu ngân)
+## 9.1 Server state machine
 
 ```mermaid
 stateDiagram-v2
-    [*] --> LISTENING : Khoi dong --server
-    LISTENING --> READY : >= 1 Client ket noi
+    [*] --> BOOT: server.exe start
 
-    READY --> SESSION_OPEN : Thu ngan nhap ma so\nBroadcast START + MENU_DATA
+    BOOT --> READY_CLOSED: load .tbl + open TCP listener
+    note right of BOOT
+        - netInit (Winsock)
+        - initRestaurantSchema
+        - openAll("data") load tat ca .tbl
+        - menuService.loadFromFile(menu.txt)
+        - lfmService.initRandom + loadFromRepository
+        - lfmService.rebuildOrderHistory
+        - tcpServer.start (port 8888)
+    end note
 
-    SESSION_OPEN --> SESSION_OPEN : USER_LOGIN\n→ getOrCreateUser → tinh LFM\n→ USER_ACK + SUGGEST
-    SESSION_OPEN --> SESSION_OPEN : ITEM_ADDED\n→ Cap nhat goi y\n→ SUGGEST moi
-    SESSION_OPEN --> SESSION_OPEN : ORDER_SUBMIT\n→ Luu don → Online SGD\n→ ORDER_ACK
+    READY_CLOSED --> READY_CLOSED: client connect (no broadcast)
+    READY_CLOSED --> READY_CLOSED: input ma SAI
+    READY_CLOSED --> SESSION_OPEN: input ma 1-9 chu so
 
-    SESSION_OPEN --> CLOSING : Thu ngan nhap lai ma so dung\nBroadcast STOP
+    SESSION_OPEN --> SESSION_OPEN: USER_LOGIN, USER_REGISTER
+    SESSION_OPEN --> SESSION_OPEN: ITEM_ADDED → SUGGEST
+    SESSION_OPEN --> SESSION_OPEN: ORDER_SUBMIT → ORDER_ACK + saveAll
+    SESSION_OPEN --> SESSION_OPEN: HEARTBEAT
+    SESSION_OPEN --> SESSION_OPEN: input ma KHAC → reject
+    SESSION_OPEN --> CLOSING: input ma KHOP
 
-    CLOSING --> REPORTING : Tong hop thong ke
-    REPORTING --> SAVING : In bao cao
-    SAVING --> [*] : Ghi report_*.txt + luu P, Q
+    CLOSING --> [*]: write report + saveAll + STOP broadcast
+    note right of CLOSING
+        - sessionService.close
+        - reportService.writeForCurrentSession
+        - lfmService.saveToRepository
+        - database.saveAll("data")
+        - tcpServer.broadcast(STOP)
+    end note
 ```
 
-### Bảng chuyển trạng thái Server
+### 9.1.1 Server actions per state
 
-| Từ | Sự kiện | Sang | Action |
-|---|---|---|---|
-| `LISTENING` | Client đầu tiên connect | `READY` | Accept, cấp `clientId` |
-| `READY` | Thu ngân nhập mã số hợp lệ | `SESSION_OPEN` | Broadcast `START` + `MENU_DATA` |
-| `SESSION_OPEN` | Nhận `USER_LOGIN` | `SESSION_OPEN` (loop) | `getOrCreateUser()` → `USER_ACK` → compute top-3 → `SUGGEST` |
-| `SESSION_OPEN` | Nhận `ITEM_ADDED` | `SESSION_OPEN` (loop) | Recompute top-3 loại món đã chọn → `SUGGEST` |
-| `SESSION_OPEN` | Nhận `ORDER_SUBMIT` | `SESSION_OPEN` (loop) | Save đơn → `onlineUpdate()` → `ORDER_ACK` |
-| `SESSION_OPEN` | Thu ngân nhập lại mã số đúng | `CLOSING` | Broadcast `STOP` |
-| `CLOSING` | Tổng hợp xong | `REPORTING` | — |
-| `REPORTING` | In console | `SAVING` | — |
-| `SAVING` | Ghi file xong | `[*]` | Thoát process |
-
-## Trạng thái đồng thời
-
-- Server duy trì **`MAX_CLIENTS` state machine Client** song song — mỗi `clientSockets[i]` có state riêng.
-- Server state ≠ Client state — Server ở `SESSION_OPEN` trong khi từng Client có thể đang ở `PHONE_INPUT`, `ORDERING`, `CHECKOUT` độc lập.
-
-## Session gate (defense-in-depth)
-
-Client state machine đã enforce: `WAITING → PHONE_INPUT` chỉ xảy ra khi nhận `MSG_START` → user không thể gửi `USER_LOGIN` trước khi thu ngân mở ca.
-
-Server-side **gate bổ sung** trong [socket_server.cpp](../../server/socket_server.cpp): các handler check `isSessionOpen()` ngay đầu vào, reject nếu ca chưa mở:
-
-| Handler | Hành vi khi `!isSessionOpen()` |
+| State | Hành động cho phép |
 |---|---|
-| `handleUserLogin` | Silent drop, log `REJECT USER_LOGIN` |
-| `handleUserRegister` | Silent drop, log `REJECT USER_REGISTER` |
-| `handleItemAdded` | Silent drop |
-| `handleOrderSubmit` | Trả `ORDER_ACK\|0\|FAIL`, log `REJECT ORDER_SUBMIT` |
+| `BOOT` | Init network, schema, load data |
+| `READY_CLOSED` | Accept TCP connect; reject mọi message ngoại trừ `HEARTBEAT` (vẫn ghi log nhưng không xử lý logic) |
+| `SESSION_OPEN` | Xử lý đầy đủ tất cả 5 lệnh từ client; persist mỗi đơn submit |
+| `CLOSING` | Save report + flush .tbl + broadcast STOP |
 
-Dashboard ([server_dashboard.mjs](../../cli/src/server_dashboard.mjs)) cũng gate: `Tab` không mở được Customers panel khi session chưa open — in log cảnh báo.
+### 9.1.2 Server-side message gating
 
-## Timeout & recovery
+Mỗi controller có guard `sessionService_.isOpen()`:
 
-| Tình huống | Xử lý |
-|---|---|
-| Client không gửi heartbeat 15s | Server đánh dấu socket slot free, không close session |
-| Client reconnect sau disconnect | Cấp lại `clientId`, gửi lại `START` + `MENU_DATA` + (nếu trước đó đang ORDERING, state reset về `PHONE_INPUT`) |
-| Server crash | Client tự retry 3 lần, mỗi lần cách 2s → nếu fail thì chuyển `ERROR` |
-| Thu ngân nhập sai mã đóng ca | Giữ nguyên `SESSION_OPEN`, prompt nhập lại |
+```cpp
+void AuthController::handleLogin(int slot, const std::string& payload) {
+    if (!sessionService_.isOpen()) return;   // session gate
+    ...
+}
+```
+
+Tránh xử lý nhầm khi session chưa mở (vd client cũ còn cache reconnect lúc server vừa restart).
+
+## 9.2 Client state machine
+
+```mermaid
+stateDiagram-v2
+    [*] --> CONNECTING: client start
+
+    CONNECTING --> WAITING: TCP connected
+    CONNECTING --> ERROR: ECONNREFUSED (3 retry)
+
+    WAITING --> PHONE: nhan START + MENU_DATA
+    note right of WAITING
+        Hien banner "Cho thu ngan mo ca"
+    end note
+
+    PHONE --> LOADING: gui USER_LOGIN
+    LOADING --> NAME_INPUT: USER_ACK isNew=true
+    LOADING --> ORDERING: USER_ACK isNew=false + SUGGEST
+
+    NAME_INPUT --> REGISTERING: gui USER_REGISTER
+    REGISTERING --> ORDERING: USER_ACK isNew=false + SUGGEST
+
+    ORDERING --> ORDERING: them mon → ITEM_ADDED → SUGGEST moi
+    ORDERING --> INVOICE: nhap 00 / Enter / du 5 mon
+
+    INVOICE --> SUBMITTING: nhap Y → ORDER_SUBMIT
+    INVOICE --> ORDERING: nhap N (sua don)
+
+    SUBMITTING --> THANKS: ORDER_ACK orderId|OK
+    SUBMITTING --> INVOICE: ORDER_ACK 0|FAIL
+
+    THANKS --> PHONE: 3s countdown auto
+
+    PHONE --> [*]: nhan STOP
+    ORDERING --> [*]: nhan STOP
+    INVOICE --> [*]: nhan STOP
+    ERROR --> [*]: exit
+```
+
+### 9.2.1 Client states và UI component tương ứng
+
+| State | Component | Mô tả |
+|---|---|---|
+| `CONNECTING` | Spinner banner | Đang mở socket |
+| `WAITING` | `WaitingScreen.jsx` | Chờ START từ server |
+| `PHONE` | `PhoneInput.jsx` | 10 ô nhập SDT |
+| `LOADING` | Spinner | Chờ USER_ACK + SUGGEST |
+| `NAME_INPUT` | `NameInput.jsx` | Khách mới nhập tên + desc |
+| `REGISTERING` | Spinner | Đang lưu thông tin |
+| `ORDERING` | `MenuDisplay` + `SuggestPanel` + `OrderSummary` | Chính: chọn món |
+| `INVOICE` | `Invoice.jsx` | Hiển thị hóa đơn để xác nhận |
+| `SUBMITTING` | Spinner | Đang gửi ORDER_SUBMIT |
+| `THANKS` | `DailySummary.jsx` | "Cảm ơn quý khách" + countdown |
+
+### 9.2.2 Reconnect logic
+
+```mermaid
+flowchart TD
+    A[Mat ket noi] --> B{So lan retry < 3?}
+    B -- "Yes" --> C[Sleep 2s]
+    C --> D[Try connect]
+    D -- "Success" --> E[Quay ve state truoc do]
+    D -- "Fail" --> F[Tang retry counter]
+    F --> B
+    B -- "No" --> G[Hien thi loi va exit]
+```
+
+## 9.3 Order builder state (client-side, in-memory)
+
+```mermaid
+stateDiagram-v2
+    [*] --> EMPTY
+    EMPTY --> HAS_ITEMS: add_item (1-4 mon)
+    HAS_ITEMS --> HAS_ITEMS: add_item them
+    HAS_ITEMS --> FULL: add_item lan thu 5
+    FULL --> FINALIZED: tu dong (BR03)
+    HAS_ITEMS --> FINALIZED: input 00 hoac Enter trang (BR02)
+    FINALIZED --> EMPTY: cancel
+    FINALIZED --> [*]: confirm + ORDER_SUBMIT
+```
+
+`ClientOrder` struct trong [client/order_builder.h](../../client/order_builder.h):
+
+```cpp
+struct ClientOrder {
+    char  codes[MAX_ITEMS][4];      // "P01\0", ...
+    int   qtys[MAX_ITEMS];
+    float prices[MAX_ITEMS];        // snapshot lúc thêm
+    char  names[MAX_ITEMS][50];     // tên hiển thị
+    int   count;                    // 0..MAX_ITEMS
+    float subtotal, discount, total;
+};
+```
+
+## 9.4 Session state (server-side)
+
+```mermaid
+stateDiagram-v2
+    [*] --> Closed
+    Closed --> Open: SessionService.open(code)
+    Open --> Closed: SessionService.close(code) khop
+    Open --> Open: close(code) khong khop → false
+
+    note right of Open
+        sessions table:
+          code = "1234"
+          opened_at = now
+          status = "O"
+    end note
+
+    note right of Closed
+        sessions table row:
+          closed_at = now
+          status = "C"
+    end note
+```
+
+Persist trong bảng `sessions` (xem [06-data-structures.md](06-data-structures.md) §6.8).
+
+## 9.5 Heartbeat health check
+
+Mỗi client gửi `HEARTBEAT|clientId|timestamp` mỗi **5 giây**.
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant Server
+
+    loop moi 5s
+        Client->>Server: HEARTBEAT|1|<unix_ts>
+        Server->>Server: lastHeartbeat[slot] = ts
+    end
+
+    Note over Server: Future: timer kiem tra<br/>now - lastHeartbeat > 15s<br/>→ closeSlot(slot)
+```
+
+Hiện tại `HeartbeatController` chỉ log sự kiện. Logic timeout-disconnect chưa enforce
+chặt — đang để TCP layer tự phát hiện connection drop qua `recv() <= 0`.
+
+## 9.6 Lý do tách state machines
+
+- **Tách rời bố cục UI ↔ business logic**: state ở client là frontend concern,
+  state ở server là transaction concern. Mixing → khó debug.
+- **Server không lưu client state**: server chỉ biết "slot X đang active hay không";
+  state đặt món của client tự quản trên client (ClientOrder struct). Trừ khi `ORDER_SUBMIT`
+  gửi lên, server không biết khách đang chọn món gì.
+- **Idempotent**: client có thể restart giữa session, kết nối lại, chọn lại từ đầu —
+  server không cần khôi phục state đặt món dở.

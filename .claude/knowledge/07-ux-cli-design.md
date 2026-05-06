@@ -1,244 +1,368 @@
 # 07 · UX CLI Design
 
-Nguồn: [phan-tich-du-an-702.md](../../phan-tich-du-an-702.md) §2, §15.
+Tài liệu mô tả nguyên tắc UX, mockup giao diện, ràng buộc đầu vào và **cách triển khai
+các tính năng** của hai UI: Server Dashboard (blessed-contrib) và Client UI (React Ink).
 
-## Nguyên tắc tối thượng (BR16)
+## 7.1 Nguyên tắc tối thượng (BR16)
 
-> Mọi thao tác nhập liệu chỉ dùng **số** và **mã ASCII không dấu**. Người dùng **không bao giờ** cần gõ tiếng Việt có dấu.
+> Mọi thao tác **nhập liệu** chỉ dùng **số** và **mã ASCII không dấu**.
 
-Output (text hiển thị) có thể chứa Vietnamese thuần — chỉ input là bị ràng buộc.
+Output (hiển thị) có thể chứa tiếng Việt — chỉ **input** mới bị ràng buộc.
 
-## Chính sách ngôn ngữ hiển thị
+## 7.2 Chính sách ngôn ngữ hiển thị
 
-| Tầng | UI | Ngôn ngữ | Lý do |
+| Tầng UI | File | Ngôn ngữ | Lý do |
 |---|---|---|---|
-| **Server (thu ngân)** | [server_dashboard.mjs](../../cli/src/server_dashboard.mjs), [ServerApp.jsx](../../cli/src/ServerApp.jsx) | **English** | Dành cho nhân viên / dev — technical, ngắn gọn (`Session OPEN`, `Revenue`, `Table 05 SUBMIT #7`) |
-| **Client (bàn khách)** | [ClientApp.jsx](../../cli/src/ClientApp.jsx) + `components/*.jsx` | **Tiếng Việt có dấu** | Dành cho khách — thân thiện (`Chào mừng trở lại`, `Hóa đơn`, `Cảm ơn quý khách!`) |
+| **Server Dashboard** | [server_dashboard.mjs](../../cli/src/server_dashboard.mjs) | English | Dành cho thu ngân/dev: technical (`Session OPEN`, `Revenue`) |
+| **Client UI** | [ClientApp.jsx](../../cli/src/ClientApp.jsx) | Tiếng Việt có dấu | Dành cho khách: thân thiện (`Chào mừng`, `Hóa đơn`) |
 
-**Input vẫn ASCII only** (BR16):
-- SĐT = chỉ chữ số
-- Mã món = `[PBCGADT][0-9][0-9]` 3 ký tự ASCII
-- Mã ca = chỉ chữ số
-- **Tên khách (NameInput)** = ASCII printable (32–126), reject Unicode multi-byte để lưu vào `char userName[40]` trong users.dat không bị corrupt. Helper text rõ `"2-35 ký tự ASCII (không dấu)"`.
+## 7.3 Đối chiếu input design
 
-## Đối chiếu input design cũ vs mới
-
-| Tính năng | Cũ (cần tiếng Việt) | Mới (chỉ số / mã) |
+| Tính năng | Trước (text) | Sau (mã/số) |
 |---|---|---|
-| Chọn món | Nhập tên món "Phở Bò" | Nhập **mã mon** `P01` |
-| Xác thực khách | Nhập tên khách "Nguyễn Văn A" | Nhập **SDT 10 chữ số** |
-| Kết thúc chọn món | Nhập "xong" | Nhập **`00`** hoặc Enter trắng |
-| Mở / đóng ca | Nhập mã giao dịch dạng text | Nhập **mã số** (vd `1234`) |
-| Chọn tùy chọn | Đọc + nhập text | Chọn **số thứ tự** 1/2/3 |
-| Xác nhận hóa đơn | Nhập "có" / "yes" | Nhấn **`Y`** hoặc **Enter** |
+| Chọn món | "Phở Bò" | **`P01`** + số lượng |
+| Xác thực khách | Nhập tên | **SDT 10 chữ số** |
+| Kết thúc chọn món | "xong" | **`00`** hoặc Enter |
+| Mở/đóng ca | Mã giao dịch text | **Mã số** (vd `1234`) |
+| Xác nhận hóa đơn | "có"/"yes" | **`Y`** hoặc Enter |
 
-## Mockup #1 — Server Dashboard (blessed-contrib, English)
+## 7.4 State machine UI client
 
-Layout 12×12 grid trong [server_dashboard.mjs](../../cli/src/server_dashboard.mjs):
-
-```
-┌ Viet Phong Server ──────────┬─ Session ────────────┐
-│ VIET PHONG RESTAURANT       │ ● SESSION OPEN       │
-│ Server ● READY  · port 8888 │ Code: 1234           │
-│ Time: 2026-04-23 22:40:12   │ Started: 22:38       │
-├ Orders Today ─ Revenue ─────┼─ Overall Stats ──────┤
-│  ██  ██   ██.█ K VND        │ Clients:  3/20       │
-│  ██ ███                     │ Users:    13         │
-│                             │ LFM sugg: 18/24 (75%)│
-├ Activity Log [Tab→Customers]┴──────────────────────┤
-│ 22:40 Server ready · 11 items · 10 users saved     │
-│ 22:40 Session OPENED code=1234                     │
-│ 22:41 Table 05 login 0901234567 (22 prior orders)  │
-│ 22:42 Table 05 SUBMIT #1 · 145.000d                │
-└────────────────────────────────────────────────────┘
-```
-
-**Tab** → chuyển sang Customers panel (cùng vị trí row 6-11):
-
-```
-┌ Customers [↑↓ select] [Enter view] ┬ Transaction History ┐
-│ Phone       Name          Orders   │ ◆ Anh Nam · 0901...  │
-│ 0901234567  Anh Nam       22  ◀    │ ▲ 22 orders · Spent..│
-│ 0912345678  Chi Lan       20       │ ─────────────────── │
-│ 0923456789  Bac Hung      18       │ ★ History: 22 orders │
-│ ...                                │   ◉ Order #1 · ...   │
-└────────────────────────────────────┴──────────────────────┘
+```mermaid
+stateDiagram-v2
+    [*] --> CONNECTING: client start
+    CONNECTING --> WAITING: TCP connected
+    WAITING --> PHONE: nhan START
+    PHONE --> LOADING: gui USER_LOGIN
+    LOADING --> NAME_INPUT: USER_ACK isNew=true
+    LOADING --> ORDERING: USER_ACK isNew=false
+    NAME_INPUT --> REGISTERING: gui USER_REGISTER
+    REGISTERING --> ORDERING: USER_ACK isNew=false
+    ORDERING --> ORDERING: them mon (ITEM_ADDED)
+    ORDERING --> INVOICE: nhap 00 hoac du 5 mon
+    INVOICE --> SUBMITTING: nhan Y
+    INVOICE --> ORDERING: nhan N (sua)
+    SUBMITTING --> THANKS: ORDER_ACK OK
+    THANKS --> PHONE: 3s countdown
+    PHONE --> [*]: STOP nhan duoc
 ```
 
-**Enter** trên 1 khách → focus chuyển sang Transaction History panel (cuộn bằng `↑↓/PgUp/PgDn/g/G`, `Esc/←` về lại danh sách).
+## 7.5 Server Dashboard — Layout sau redesign
 
-Gate: `Tab` chỉ mở được Customers panel khi **session đang mở**; nếu chưa mở, log dòng đỏ `"Must open SESSION before viewing customer history"`.
+Dashboard 12-row × 12-col blessed-contrib grid, chia 3 vùng:
 
-Widget đã loại bỏ: `clientTable` (Bang khach), `heartbeatSparkline` (Heartbeat 60s) — cả 2 trùng hoặc không cần thiết.
+```mermaid
+graph TB
+    subgraph TOP["Row 0-2: Header + Session"]
+        H["Header (col 0-6)<br/>cfonts 'chrome' VIET PHONG<br/>+ mascot + lĩnh vực"]
+        S["Session (col 7-11)<br/>SESSION OPEN/CLOSED<br/>Code prompt"]
+    end
+    subgraph MID["Row 3-5: 3 Stats Panels"]
+        L["▣ Live Stats (col 0-3)<br/>Session/Orders/Revenue<br/>Discount/Avg/Guests"]
+        TS["⚑ Top Sellers (col 4-7)<br/>BTree(item_code) group-by<br/>Top 5 món bán chạy"]
+        TC["✦ Top Customers (col 8-11)<br/>BTree(user_id) group-by<br/>Top 5 khách chi nhiều"]
+    end
+    subgraph BOT["Row 6-11: Activity Stream"]
+        A["Rich one-line entries<br/>color-coded by event type"]
+    end
 
-## Mockup #2 — Server (Thu ngân, ASCII wireframe cũ)
-
-```
-+----------------------------------------------------------+
-|  VIET PHONG RESTAURANT  —  CASHIER SERVER                |
-+----------------------------------------------------------+
-|  Server: 192.168.1.100:8888    [RUNNING]                 |
-|  Clients: [Table 1: OK] [Table 2: OK] [Table 3: WAIT]    |
-+----------------------------------------------------------+
-|  Nhap MA SO de MO CA (chi so):                           |
-|  > [____]                                                |
-+----------------------------------------------------------+
-|  Don hom nay: 12   Doanh thu: 4.520.000d                 |
-|  Goi y LFM dung: 47 lan   Ti le chap nhan: 63%           |
-+----------------------------------------------------------+
-```
-
-→ Component: `ServerApp.jsx` → compose `WaitingScreen.jsx` + stats panel.
-
-## Mockup #2 — Client nhập SDT
-
-```
-+----------------------------------------------+
-|   NHA HANG VIET PHONG  —  BAN 02             |
-+----------------------------------------------+
-|                                              |
-|   Chao mung! Vui long nhap so dien thoai:    |
-|                                              |
-|   SDT (10 chu so):  > [__________]           |
-|                                              |
-|   Luu y: Chi nhap chu so, khong can go dau   |
-|   Vi du: 0901234567                          |
-|                                              |
-+----------------------------------------------+
+    TOP --> MID --> BOT
 ```
 
-→ Component: `PhoneInput.jsx`.
-
-**Validate inline:**
-- Độ dài khác 10 → `"Loi: Can dung 10 chu so"`.
-- Có ký tự không phải số → `"Loi: Chi nhap chu so"`.
-- Không bắt đầu bằng `0` → `"Loi: SDT phai bat dau bang 0"`.
-
-## Mockup #2b — Đăng ký khách mới (Name + Desc)
-
-Khi `USER_ACK.isNew=true`, client chuyển sang `NameInput.jsx`:
+### 7.5.1 Header banner
 
 ```
-╔══════════════════════════════════════════════════╗
-║  ✦  KHACH MOI — VUI LONG CHO BIET TEN  ✦         ║
-║                                                    ║
-║  ◆ SDT: 0900000001                                 ║
-║                                                    ║
-║  ▶ Ten cua ban:                                    ║
-║     Nguyen Van A_                                  ║
-║     ▲ 2-35 ky tu ASCII (khong dau). Enter de tiep. ║
-║                                                    ║
-║  ▶ Mo ta ngan (tuy chon):                          ║
-║     Dan van phong, thich Pho Bo_                   ║
-║     ▲ Enter trong de bo qua.                       ║
-╚══════════════════════════════════════════════════╝
++- Viet Phong Server -----------------------+
+|  ╦  ╦ ╦ ╔═╗ ╔╦╗   ╔═╗ ╦ ╦ ╔═╗ ╔╗╔ ╔═╗     |
+|  ╚╗╔╝ ║ ║╣   ║    ╠═╝ ╠═╣ ║ ║ ║║║ ║ ╦     |
+|   ╚╝  ╩ ╚═╝  ╩    ╩   ╩ ╩ ╚═╝ ╝╚╝ ╚═╝     |
+| (=^.^=)  F&B Smart Order  ·  LFM Recom...   |
++---------------------------------------------+
 ```
 
-→ Component: `NameInput.jsx`. Gửi `USER_REGISTER` khi xong.
+Big-text "VIET PHONG" dùng cfonts font `chrome` (3 dòng, ~40 chars wide). Hardcoded
+trong [server_dashboard.mjs::renderHeader](../../cli/src/server_dashboard.mjs)
+để tránh bug auto-wrap của cfonts khi terminal width detection sai.
 
-**Validate inline:**
-- Tên < 2 ký tự → `"Ten phai co it nhat 2 ky tu ASCII"`.
-- Ký tự Unicode/tiếng Việt có dấu → reject tại input (BR16).
-- Tên trống sau sanitize server-side → fallback `"Khach"`.
-
-## Mockup #3 — Menu + Gợi ý (khách quen)
+### 7.5.2 Live Stats panel
 
 ```
-+----------------------------------------------+
-|   NHA HANG VIET PHONG  —  BAN 02             |
-+----------------------------------------------+
-|   Chao mung tro lai! SDT: 0901234567         |
-|   Ban da dat 7 lan. Mon yeu thich: Pho Bo    |
-+----------------------------------------------+
-|   MA MON  | TEN MON              | GIA       |
-|   --------+----------------------+-----------|
-|   P01     | Pho Bo Tai           | 65.000d   |
-|   P02     | Pho Ga               | 55.000d   |
-|   B01     | Bun Bo Hue           | 60.000d   |
-|   C01     | Com Tam Suon Bi      | 75.000d   |
-|   D01     | Tra Da               | 15.000d   |
-|   D02     | Nuoc Ngot            | 20.000d   |
-+----------------------------------------------+
-|   GOI Y CHO BAN (dua tren lich su):          |
-|   C01  Com Tam    ████████░  0.91            |
-|   D01  Tra Da     ███████░░  0.85            |
-|   T01  Che        █████░░░░  0.72            |
-+----------------------------------------------+
-|   Da chon: [P01 x1] [D01 x1]  Con lai: 3     |
-|   Nhap: [MA MON] [SO LUONG]  00 = Xong       |
-|   > [___] [_]                                |
-+----------------------------------------------+
++- ▣ Live Stats -------+
+| Session:        ● 1234|
+| Orders today:    42   |
+| Revenue today:  2.85M |
+| Discounts:       5    |
+| Avg ticket:      67k  |
+| Unique guests:   38   |
+| Active clients:  3/20 |
++----------------------+
 ```
 
-→ Compose: `MenuDisplay.jsx` + `SuggestPanel.jsx` + `OrderSummary.jsx`.
+Tính từ `transactions.tbl` filter theo `session_code = currentCode`. Số liệu chính:
+- **Orders today**: count transactions trong ca.
+- **Revenue today**: `Σ total` của transactions ca này — đây là use case của
+  [Fenwick tree](11-mini-dbms.md#114-fenwicktree-aggregate-prefix-sum-olog-n)
+  (hiện đang aggregate JS-side; có thể chuyển sang Fenwick C++ nếu cần performance).
+- **Avg ticket**: `revenue / count`.
+- **Unique guests**: số `user_id` riêng biệt trong ca (Set count).
 
-**SuggestPanel bar chart:** mỗi vị trí bar dùng `'█'` nếu `(i / total_chars) < score` else `'░'`. Ví dụ score 0.91 trên 9 ký tự → 8 ô `█` + 1 ô `░`.
-
-## Mockup #4 — Hóa đơn
+### 7.5.3 Top Sellers panel — sử dụng BTree(item_code)
 
 ```
-+--------------------------------------------------+
-|              HOA DON — BAN 02                    |
-|     Ma GD: 1234   23/04/2026 10:35               |
-|     SDT: 0901234567                              |
-+------+-----+------------+----+--------+----------+
-| STT  | Ma  | Ten mon    | SL | Don gia| T.tien   |
-+------+-----+------------+----+--------+----------+
-|  1   | P01 | Pho Bo Tai |  2 | 65.000 | 130.000  |
-|  2   | D01 | Tra Da     |  2 | 15.000 |  30.000  |
-+------+-----+------------+----+--------+----------+
-|                     Tam tinh:       160.000d     |
-|                     Giam gia:             0d     |
-|                     TONG CONG:     160.000d     |
-+--------------------------------------------------+
-|  Xac nhan gui len Server?  Y = Co / N = Sua lai  |
-|  > [_]                                           |
-+--------------------------------------------------+
++- ⚑ Top Sellers Today --+
+| ① P01 Pho Bo Tai  x42  2.730.000d|
+| ② D01 Tra Da      x38    570.000d|
+| ③ C01 Com Tam     x25  1.875.000d|
+|  ④ B01 Bun Bo     x18  1.080.000d|
+|  ⑤ G01 Goi Cuon   x12    660.000d|
++------------------------+
 ```
 
-→ Component: `Invoice.jsx`.
+Logic: load `transaction_items.tbl` qua [tbl_reader.mjs](../../cli/src/tbl_reader.mjs)
+→ group theo `item_code` → sum `qty` + sum `qty * price` → sort desc → top 5.
 
-**Keys chấp nhận:**
-- `Y` hoặc `Enter` → gửi `ORDER_SUBMIT`.
-- `N` → quay lại trạng thái ORDERING để sửa.
+→ Demo capability của **BTree(item_code)** trong `transaction_items` table. Khi server
+muốn báo cáo best sellers, nó scan qua items table — index BTree cho phép nhóm theo code
+trong O(log N + N) thay vì O(N²) với so sánh mọi cặp.
 
-## Mapping mockup → JSX component
+### 7.5.4 Top Customers panel — sử dụng BTree(user_id)
 
-| Mockup | Component | Tầng | Ngôn ngữ |
-|---|---|---|---|
-| Dashboard (default) | `cli/src/server_dashboard.mjs` (blessed-contrib) | Server | English |
-| Dashboard (React Ink) | `cli/src/ServerApp.jsx` | Server | English |
-| Mockup #2 | `WaitingScreen.jsx` | Client | Vietnamese có dấu |
-| Mockup #2 | `PhoneInput.jsx` | Client | VN (hiển thị), ASCII (input) |
-| Mockup #2b | `NameInput.jsx` (khách mới) | Client | VN (hiển thị), ASCII (input) |
-| Mockup #3 | `MenuDisplay.jsx` + `SuggestPanel.jsx` + `OrderSummary.jsx` | Client | Vietnamese có dấu |
-| Mockup #4 | `Invoice.jsx` | Client | Vietnamese có dấu |
-| Tổng kết khách | `DailySummary.jsx` | Client | Vietnamese có dấu |
-
-## Rule hiển thị tiền
-
-Format: `1.234.567d` (dấu `.` phân cách ngàn, `d` thay cho `đ` để tránh Unicode trong một số terminal).
-
-## IPC giữa Node.js (UI) và C++ core
-
-Đề xuất: stdio JSON — mỗi dòng 1 JSON object.
-
-**Up (UI → C++ core):**
-```json
-{"type":"USER_LOGIN","phone":"0901234567"}
-{"type":"ITEM_ADDED","code":"P01","qty":1}
-{"type":"ORDER_SUBMIT"}
+```
++- ✦ Top Customers ---+
+| ① 0989012345 Bac Sau   x21 2.488.000d|
+| ② 0901234567 Anh Nam   x22   725.000d|
+| ③ 0934567890 Chi Mai   x21   580.000d|
+|  ④ 0956789012 Co Tu     x20   420.000d|
+|  ⑤ 0945678901 Anh Minh  x23   190.000d|
++----------------------+
 ```
 
-**Down (C++ core → UI):**
-```json
-{"type":"MENU_DATA","items":[{"code":"P01","name":"Pho Bo Tai","price":65000},...]}
-{"type":"USER_ACK","userId":5,"isNew":false,"orderCount":3}
-{"type":"SUGGEST","items":[{"code":"C01","score":0.91},...]}
+Logic: load `transactions.tbl` → group theo `user_id` → sum `total` + count →
+join với `users.tbl` (lookup name + phone) → sort by total desc → top 5.
+
+→ Demo capability của **BTree(user_id)** trong `transactions` table. Truy vấn nhanh
+"đơn của user X" thực chất là scan tất cả txn vẫn rất nhanh nhờ BTree group.
+
+### 7.5.5 Activity Stream — rich notification
+
+Color-coded one-line entries:
+
+```
+14:23 ━━ SESSION OPENED · code 1234
+14:24 ▼ LOGIN  Table 01 · 0901234567 · 22 prior orders
+14:25 ✓ ORDER #182 · Table 01 · 0901234567 Anh Nam · P01x2 + D01x1 · 145.000d
+14:30 + REGISTER Table 02 · 0999888777 · Tester (NEW)
+14:31 ★ ORDER #183 · Table 02 · 0999888777 Tester · A01x20+C01x5+G01x10 · 1.893.750d (-25%)
+14:35 ▼ Table 02  connected
+14:40 • Table 01  added  P01
+22:00 ━━ SESSION CLOSED · 42 orders · revenue 2.850.000d
 ```
 
-Module `cli/src/ipc.js`:
-```js
-export function send(obj) { process.stdout.write(JSON.stringify(obj) + '\n'); }
-export function on(type, cb) { /* lắng nghe process.stdin, parse line, match type */ }
+Mã màu:
+| Icon | Sự kiện | Style |
+|---|---|---|
+| `━━` | Session events | bold blue |
+| `▼` | Login / Connect | cyan |
+| `+` | Register | magenta |
+| `✓` | Đơn thường | green |
+| `★` | Đơn lớn (giảm 25%) | yellow + bold |
+| `•` | Item added | gray (low signal) |
+| `▲` | Disconnect | gray |
+| `✗` | Error / reject | red |
+
+## 7.6 Implementation: dashboard feature flow
+
+### 7.6.1 IPC event flow
+
+```mermaid
+sequenceDiagram
+    participant SE as server.exe<br/>(C++ JsonEventListener)
+    participant SI as server_ipc.js<br/>(Node bridge)
+    participant SD as server_dashboard.mjs<br/>(blessed UI)
+    participant TR as tbl_reader.mjs
+
+    SE->>SI: stdout JSON line<br/>{"event":"order_submitted",...}
+    SI->>SI: parse + dispatch
+    SI->>SD: ipc.on('order_submitted', cb)
+    SD->>SD: stats.totalOrdersToday++
+    SD->>TR: rebuildAggregates()
+    TR->>TR: loadTransactionsTbl + Items + Users
+    TR-->>SD: _aggTopSellers, _aggTopCustomers
+    SD->>SD: renderOrderEntry(e)<br/>(re-load .tbl để lấy items + name)
+    SD->>SD: activityLog.log(rich-line)
+    SD->>SD: redraw() → render 3 panels
 ```
+
+### 7.6.2 Event name mapping (post Spring refactor)
+
+Server (`json_event_listener.cpp`) emit JSON lines, dashboard subscribe đúng tên:
+
+| Server emit | Dashboard `ipc.on(...)` | Action |
+|---|---|---|
+| `server_started` | ✓ | set `ready=true`, `loadMenu()` |
+| `menu_loaded` | ✓ | log "Menu loaded · N items" |
+| `client_connect` | ✓ | `stats.clientsConnected++` + log |
+| `client_disconnect` | ✓ | `stats.clientsConnected--` + log |
+| `session_opened` | ✓ | `rebuildAggregates()` để load seed |
+| `session_closed` | ✓ | log + `process.exit` sau 2.5s |
+| `user_login` | ✓ | log + `stats.totalSuggest++` |
+| `user_register` | ✓ | log "REGISTER ... NEW" |
+| `item_added` | ✓ | log nhỏ (gray) + counter |
+| `order_submitted` | ✓ | **rich render** + rebuildAggregates |
+| `suggest` | ✓ | track LFM accept rate |
+| `heartbeat` | ✓ | silent (no log) |
+
+### 7.6.3 `rebuildAggregates()` — throttling
+
+```javascript
+let _aggLastTxnCount = -1;
+function rebuildAggregates() {
+  const txns = loadTransactionsTbl(pathTxns);
+  if (txns.length === _aggLastTxnCount) return;   // no change → skip
+  _aggLastTxnCount = txns.length;
+
+  // ... group by item_code → _aggTopSellers
+  // ... group by user_id → _aggTopCustomers
+  // ... filter by session_code → _aggSessionStats
+}
+```
+
+Throttle bằng so sánh `txns.length`. Tránh re-read .tbl khi không có đơn mới
+(vd dashboard re-render mỗi giây cho timestamp).
+
+### 7.6.4 `renderOrderEntry(e)` — rich format
+
+```javascript
+function renderOrderEntry(e) {
+  // e = { slot, userId, orderId, items, total, discount }
+  // chỉ có itemCount (count) — KHÔNG có items detail
+  // → Re-load .tbl để lấy items + user info
+  const txns = loadTransactionsTbl(pathTxns);
+  const items = indexItemsByTxn(loadTxnItemsTbl(pathTxnItems));
+  const users = loadUsersTbl(pathUsers);
+  const txnId = e.orderId - 1;   // ORDER_ACK gửi orderId = txnId+1
+  const t = txns.find(x => x.txnId === txnId);
+  const u = users.find(x => x.userId === t.userId);
+  const itemsStr = items.get(txnId).map(it => `${it.code}x${it.qty}`).join(' + ');
+
+  if (e.discount > 0) {
+    return `{yellow-fg}{bold}★ ORDER #${e.orderId}{/}{/bold} · ${u.phone} ${u.name} · ${itemsStr} · {bold}${money(e.total)}{/} {magenta-fg}(-25%){/}`;
+  }
+  return `{green-fg}✓ ORDER #${e.orderId}{/} · ${u.phone} ${u.name} · ${itemsStr} · {bold}${money(e.total)}{/}`;
+}
+```
+
+### 7.6.5 Wrapper scripts — clean terminal
+
+`tools/run.bat` và `tools/run.sh` sinh wrapper `.bat` tạm trong `tools/_runtmp/`. Nội dung:
+
+```bat
+@echo off
+title PBL1 Client UI 1
+cd /d "<project>\cli"
+ping -n 5 127.0.0.1 >nul       :: delay 4s đợi server listen
+cls                              :: xóa terminal trước khi npm chạy
+call npm start --silent -- 127.0.0.1 1
+echo.
+echo Client exited. Press any key to close.
+pause >nul
+```
+
+`--silent` ẩn dòng `> restaurant-cli@0.2.0 start` + `> node --import tsx/esm ...`.
+`cls` xóa output `ping` trước React Ink chiếm terminal → UI client sạch sẽ ngay từ đầu.
+
+## 7.7 Client UI mockups (Tiếng Việt)
+
+### 7.7.1 Trạng thái WAITING (chờ START)
+
+```
++-----------------------------------------+
+|       BAN 01                            |
+|       VIET PHONG RESTAURANT             |
+|                                         |
+|       * Cho thu ngan mo ca...           |
+|         (cho tin hieu START tu Server)  |
++-----------------------------------------+
+```
+
+### 7.7.2 Trạng thái PHONE (nhập SDT)
+
+```
++ BAN 01 - DAT MON ----------------------+
+| * Vui long nhap SDT (10 chu so):        |
+|                                         |
+|     [_][_][_][_][_][_][_][_][_][_]      |
+|                                         |
+| (Vi du: 0901234567)                     |
++----------------------------------------+
+```
+
+### 7.7.3 Trạng thái ORDERING
+
+```
++ BAN 01 - SDT 0901234567 - Anh Nam (22 don) +
+| THUC DON               | GOI Y CHO BAN     |
+| P01 Pho Bo Tai 65.000  | * P01 score 2.74  |
+| P02 Pho Ga    55.000   | * D01 score 2.70  |
+| B01 Bun Bo    60.000   | * C01 score 1.48  |
+| ...                    +-------------------+
+| D01 Tra Da    15.000   | DON HIEN TAI:     |
+| T01 Che       25.000   | P01 x2  130.000   |
++------------------------+ D01 x1   15.000   |
+| Nhap MA + SO LUONG     |                   |
+| (vd: P01 2)            | TAM TINH: 145.000 |
+| 00 = ket thuc          |                   |
++----------------------------------------+----+
+```
+
+### 7.7.4 Trạng thái INVOICE
+
+```
++======== HOA DON ========+
+|| BAN 01    SDT 0901234567 ||
+||    Anh Nam               ||
+||  --------------------    ||
+||  P01 Pho Bo Tai x2 130.000||
+||  D01 Tra Da    x1  15.000 ||
+||  --------------------    ||
+||  Tam tinh:    145.000    ||
+||  Giam gia:          0    ||
+||  TONG:        145.000    ||
+||  Nhan Y de gui don       ||
+||  Nhan N de sua           ||
++==========================+
+```
+
+### 7.7.5 Trạng thái THANKS
+
+```
++----------------------------------------+
+|    * CAM ON QUY KHACH!                  |
+|    Don hang #007 145.000d               |
+|    (Tu dong tro ve trong 3s...)         |
++----------------------------------------+
+```
+
+## 7.8 Validate input
+
+| Field | Quy tắc | Lỗi hiển thị |
+|---|---|---|
+| SDT | 10 chữ số, bắt đầu '0' | "SDT khong hop le, vui long nhap lai" |
+| Mã món | 3 ký tự, prefix [PBCGADT], tồn tại | "Ma mon khong ton tai" |
+| Số lượng | 1–99 | "So luong phai 1-99" |
+| Tên khách | ASCII 2-35 ký tự | "Ten chi dung chu cai khong dau (2-35)" |
+| Y/N | 'y'/'Y'/'n'/'N'/Enter | (không error, default Y) |
+
+## 7.9 Heartbeat & disconnect
+
+- Client gửi `HEARTBEAT|clientId|timestamp` mỗi **5s**.
+- Nếu mất kết nối > **15s** → hiển thị banner đỏ "Mất kết nối, đang thử lại..." + auto reconnect 3 lần × 2s.
+
+## 7.10 Hot-reload menu
+
+Client nhận `MENU_DATA` → tự động:
+1. Clear menu table cục bộ trong [main_client.cpp::applyMenuData](../../client/main_client.cpp).
+2. Insert lại từng item với HashIndex(code).
+3. Render `MenuDisplay.jsx` với danh sách mới.
+
+Đảm bảo nếu menu.txt bên server thay đổi giữa các session, client tự pickup khi reconnect.

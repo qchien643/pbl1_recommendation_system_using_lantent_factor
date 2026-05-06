@@ -1,198 +1,271 @@
-# 06 · Data Structures (Parallel Arrays)
+# 06 · Data Structures — Schema & ER Diagram
 
-Nguồn: [phan-tich-du-an-702.md](../../phan-tich-du-an-702.md) §11.
+## 6.1 Tổng quan
 
-## Tại sao parallel arrays?
+Sau refactor sang mini-DBMS, dữ liệu được tổ chức thành **7 bảng** với schema cố định, lưu xuống
+file nhị phân `.tbl`. Mỗi bảng có 1 hoặc nhiều index (HashIndex hoặc BTreeIndex) tùy access pattern.
 
-Đề bài DUT PBL1 ràng buộc dùng **C/C++ cơ bản** — không sử dụng OOP nặng (class hierarchy, STL phức tạp, `std::vector` nơi mảng tĩnh đủ dùng). Cách tổ chức:
+Các Record struct (POJO) tương ứng với từng bảng được khai báo tại
+[server/repositories/i_*_repository.h](../../server/repositories/) — đây là **plain data carriers**
+(Java DTO style), không có business method.
 
-- Mỗi "thuộc tính" của entity là 1 mảng riêng.
-- Index `i` trong mọi mảng liên quan trỏ đến cùng một entity.
-- Vd: `userPhone[5]` và `userTotalOrders[5]` cùng mô tả user thứ 5.
-
-Ưu điểm: đơn giản, không cần cấp phát động, dễ serialize/deserialize ra file binary.
-
-## Constants
-
-```cpp
-const int MAX_MENU    = 20;   // tối đa 20 món
-const int MAX_ORDERS  = 1000; // tối đa 1000 đơn / ca (session-only)
-const int MAX_ITEMS   = 5;    // tối đa 5 món / đơn (BR01)
-const int MAX_CLIENTS = 20;   // tối đa 20 bàn
-const int MAX_USERS   = 1000; // tối đa 1000 SDT khác nhau
-const int MAX_TXN     = 5000; // transactions persistent xuyên ca
-const int NAME_LEN    = 40;   // char buffer cho userName[]
-const int DESC_LEN    = 80;   // char buffer cho userDesc[]
-const int K           = 10;   // latent dimensions
-const float LR        = 0.01f;
-const float REG       = 0.02f;
-const int   MAX_ITER  = 50;
-```
-
-## Menu
-
-```cpp
-char  menuCode[MAX_MENU][4];       // "P01\0", "B01\0"...
-char  menuName[MAX_MENU][50];      // "Pho Bo Tai" (ASCII no-diacritics)
-float menuPrice[MAX_MENU];
-char  menuCategory[MAX_MENU];      // 'P','B','C','G','A','D','T'
-int   menuCount = 0;
-```
-
-## Users (mapping SDT → userId)
-
-```cpp
-char  userPhone[MAX_USERS][11];           // "0901234567\0"
-char  userName[MAX_USERS][NAME_LEN];      // "Nguyen Van A\0" — set khi dang ky
-char  userDesc[MAX_USERS][DESC_LEN];      // mo ta tuy chon
-int   userTotalOrders[MAX_USERS];         // số đơn lịch sử
-int   userCount = 0;
-
-// Aggregate cache: số lần user u đã đặt món i
-// DERIVED tu txn*[] (rebuildOrderHistory), khong con persist truc tiep.
-int   orderHistory[MAX_USERS][MAX_MENU];
-```
-
-**New user flow:**
-- `getOrCreateUser(phone)` tạo user với `userName[]=""`, `userDesc[]=""`.
-- Client thấy `USER_ACK.isNew=true` → hỏi tên → gửi `USER_REGISTER`.
-- Server `setUserName(userId, name, desc)` + `saveUsers()`.
-- Lần sau login: `isNew = (userName[userId][0] == '\0')` — nghĩa là đã có tên thì không phải mới.
-
-## Latent Factor Model matrices
-
-```cpp
-float P[MAX_USERS][K];   // User latent matrix
-float Q[MAX_MENU][K];    // Item latent matrix
-```
-
-## Orders — session-only (reset mỗi ca)
-
-```cpp
-int   orderId[MAX_ORDERS];
-int   orderUserId[MAX_ORDERS];
-char  orderPhone[MAX_ORDERS][11];
-int   orderClientId[MAX_ORDERS];
-char  orderTime[MAX_ORDERS][20];   // "2026-04-23 10:35"
-
-// Chi tiết từng món trong đơn (parallel arrays 2D)
-char  orderItemCode[MAX_ORDERS][MAX_ITEMS][4];
-int   orderItemQty[MAX_ORDERS][MAX_ITEMS];
-float orderItemPrice[MAX_ORDERS][MAX_ITEMS];
-int   orderItemCount[MAX_ORDERS]; // số món thực tế trong đơn (≤ 5)
-
-float orderSubtotal[MAX_ORDERS];
-float orderDiscount[MAX_ORDERS];
-float orderTotal[MAX_ORDERS];
-int   totalOrders = 0;
-```
-
-## Transactions — persistent xuyên ca (NEW)
-
-Source of truth cho lịch sử đặt món per-order. **Khác** `order*[]` ở trên (chỉ session). Khi `ORDER_SUBMIT`: `createOrder()` vừa populate `order*[]` (cho report cuối ca) vừa gọi `appendTransaction()` push vào `txn*[]` (persist).
-
-```cpp
-int   txnCount;
-int   txnUserIdx[MAX_TXN];                 // index vào userPhone[]
-char  txnTime[MAX_TXN][20];                // "2026-04-23 10:35:22"
-char  txnSessionCode[MAX_TXN][10];         // mã ca
-int   txnItemCount[MAX_TXN];               // 1..MAX_ITEMS
-char  txnItemCode[MAX_TXN][MAX_ITEMS][4];
-int   txnItemQty[MAX_TXN][MAX_ITEMS];
-float txnSubtotal[MAX_TXN];
-float txnDiscount[MAX_TXN];
-float txnTotal[MAX_TXN];
-```
-
-**API** ([server/transaction_store.h](../../server/transaction_store.h)):
-- `appendTransaction(userIdx, time, sessCode, count, codes, qtys, sub, disc, total)` → push 1 txn.
-- `saveTransactions("data/transactions.dat")` / `loadTransactions(...)` — binary.
-- `rebuildOrderHistory()` — scan `txn*[]` và dựng lại `orderHistory[u][i]` aggregate cho LFM.
-
-**Life-cycle:**
-- Startup: `loadUsers()` → `loadTransactions()` → `rebuildOrderHistory()` → `lfmTrain()`.
-- Runtime: sau `ORDER_SUBMIT`, `appendTransaction()` được gọi; `lfmOnlineUpdate()` tiếp tục tăng `orderHistory` cache như cũ (không đụng `txn*[]` về phần cache).
-- Session close: `saveTransactions("data/transactions.dat")` + `saveUsers("data/users.dat")`.
-
-## Session
-
-```cpp
-char sessionCode[10];    // "1234"
-char sessionStart[20];   // "2026-04-23 07:00"
-char sessionEnd[20];
-```
-
-## ER diagram
+## 6.2 Sơ đồ tổng các bảng
 
 ```mermaid
 erDiagram
-    MENU_ITEMS {
-        char code PK "P01, B01..."
-        char name
-        float price
-        char category
-    }
     USERS {
-        int userId PK
-        char phone UK "10 digits"
-        int totalOrders
+        int64 user_id PK
+        string phone "10 digits, UNIQUE"
+        string name "ASCII <=39"
+        string description
+        int64 total_orders
+        int64 created_at "unix ts"
     }
-    USER_ITEM_HISTORY {
-        int userId FK
-        char itemCode FK
-        int orderCount
-        float implicitRating "log(1+count)"
+    MENU {
+        string code PK "P01, B01..."
+        string name "Pho Bo Tai"
+        double price
+        string category "P/B/C/G/A/D/T"
     }
-    SESSION {
-        char sessionCode PK
-        char startTime
-        char endTime
+    TRANSACTIONS {
+        int64 txn_id PK
+        int64 user_id FK
+        string session_code FK
+        string ts "YYYY-MM-DD HH:MM:SS"
+        double subtotal
+        double discount
+        double total
     }
-    ORDERS {
-        int orderId PK
-        int userId FK
-        char sessionCode FK
-        float total
+    TRANSACTION_ITEMS {
+        int64 txn_id FK
+        int64 seq "0..MAX_ITEMS-1"
+        string item_code FK
+        int64 qty
+        double price "snapshot luc dat"
     }
-    ORDER_DETAILS {
-        int orderId FK
-        int slot "0..4"
-        char itemCode FK
-        int quantity
+    LFM_P {
+        int64 user_id PK
+        blob vec "K=10 floats = 40 bytes"
     }
-    LFM_MODEL {
-        int userId FK
-        float P_vector "K floats"
+    LFM_Q {
+        int64 item_idx PK
+        blob vec "K=10 floats = 40 bytes"
     }
-    LFM_ITEM_VECTORS {
-        char itemCode FK
-        float Q_vector "K floats"
+    SESSIONS {
+        string code PK "1234"
+        string opened_at
+        string closed_at
+        string status "O = open, C = closed"
     }
 
-    SESSION ||--o{ ORDERS : contains
-    ORDERS ||--|{ ORDER_DETAILS : has
-    ORDER_DETAILS }o--|| MENU_ITEMS : references
-    ORDERS }o--|| USERS : placed_by
-    USERS ||--o{ USER_ITEM_HISTORY : has
-    USER_ITEM_HISTORY }o--|| MENU_ITEMS : about
-    USERS ||--o| LFM_MODEL : has_vector
-    MENU_ITEMS ||--o| LFM_ITEM_VECTORS : has_vector
+    USERS ||--o{ TRANSACTIONS : places
+    SESSIONS ||--o{ TRANSACTIONS : contains
+    TRANSACTIONS ||--|{ TRANSACTION_ITEMS : has
+    TRANSACTION_ITEMS }o--|| MENU : refers_to
+    USERS ||--o| LFM_P : has_vector
+    MENU ||--o| LFM_Q : has_vector
 ```
 
-## Quy ước index
+## 6.3 Constants
 
-- `userId ∈ [0, userCount)` — ID nội bộ, không phải SDT.
-- `itemIdx ∈ [0, menuCount)` — index trong `menuCode[]`. Khác với `itemCode` là string.
-- `orderId = totalOrders + 1` khi tạo đơn mới → cộng dồn suốt ca, reset mỗi ca.
-- `clientId` là slot socket trong `clientSockets[MAX_CLIENTS]`.
+```cpp
+// shared/constants.h
+const int   MAX_MENU      = 20;
+const int   MAX_USERS     = 1000;
+const int   MAX_TXN       = 5000;
+const int   MAX_ITEMS     = 5;            // BR01
+const int   MAX_CLIENTS   = 20;
+const int   NAME_LEN      = 40;
+const int   DESC_LEN      = 80;
 
-## Serialize / deserialize
+const int   K             = 10;            // LFM dim
+const float LR            = 0.01f;
+const float REG           = 0.02f;
+const int   MAX_ITER      = 50;
+const float MIN_DELTA     = 1e-4f;
+const int   PATIENCE      = 10;
 
-| Array | File | Format |
+const float DISCOUNT_THRESHOLD = 2000000.0f;
+const float DISCOUNT_RATE      = 0.25f;
+const int   DEFAULT_PORT       = 8888;
+```
+
+## 6.4 Bảng `users` (chi tiết)
+
+```cpp
+// server/repositories/i_user_repository.h
+struct UserRecord {
+    int64_t     userId;       // tương ứng cột user_id
+    std::string phone;        // SDT 10 chữ số
+    std::string name;         // tên (rỗng nếu chưa register)
+    std::string description;  // mô tả tùy chọn
+    int64_t     totalOrders;  // số đơn lịch sử
+    int64_t     createdAt;    // unix timestamp
+};
+```
+
+**Indexes:**
+- `HashIndex(user_id)` UNIQUE — tra theo userId O(1).
+- `HashIndex(phone)` UNIQUE — tra theo SDT O(1) (thay linear scan cũ).
+
+**Storage size:** 8 + 11 + 40 + 80 + 8 + 8 = **155 bytes/row**. 1000 users ≈ 155 KB.
+
+## 6.5 Bảng `menu`
+
+```cpp
+struct MenuItemRecord {
+    int64_t     menuIdx;    // == position trong table (0..count-1)
+    std::string code;       // "P01"
+    std::string name;       // "Pho Bo Tai"
+    double      price;
+    std::string category;   // 1 ký tự
+};
+```
+
+**Indexes:**
+- `HashIndex(code)` UNIQUE PK — `findIndexByCode("P01")` O(1).
+
+**Storage size:** 4 + 50 + 8 + 2 = **64 bytes/row**. 20 món = ~1.3 KB.
+
+## 6.6 Bảng `transactions` + `transaction_items` (1-N)
+
+```cpp
+struct TransactionRecord {
+    int64_t                    txnId;
+    int64_t                    userId;
+    std::string                sessionCode;
+    std::string                ts;
+    double                     subtotal;
+    double                     discount;
+    double                     total;
+    std::vector<TxnItemRecord> items;   // join sẵn từ transaction_items
+};
+
+struct TxnItemRecord {
+    int64_t     txnId;
+    int64_t     seq;        // 0..MAX_ITEMS-1
+    std::string itemCode;
+    int64_t     qty;
+    double      price;      // snapshot lúc đặt
+};
+```
+
+**Indexes:**
+
+| Bảng | Cột | Loại | Mục đích |
+|---|---|---|---|
+| `transactions` | `txn_id` | HashIndex UNIQUE | Tra theo PK |
+| `transactions` | `user_id` | **BTreeIndex** | Lịch sử đặt món của 1 SDT |
+| `transactions` | `ts` | **BTreeIndex** | Báo cáo theo khoảng ngày |
+| `transaction_items` | `txn_id` | **BTreeIndex** | Join 1-N nhanh |
+| `transaction_items` | `item_code` | **BTreeIndex** | Top-N best sellers |
+
+**Storage:**
+- header row: 8+8+10+20+8+8+8 = **70 bytes**.
+- item row: 8+8+4+8+8 = **36 bytes**.
+- 5000 txns × 70 + 5000×3 items × 36 ≈ 350 KB + 540 KB = **890 KB**.
+
+## 6.7 Bảng `lfm_p` / `lfm_q`
+
+```cpp
+struct LfmVectorRecord {
+    int64_t            id;     // user_id hoặc item_idx
+    std::vector<float> vec;    // length = K = 10
+};
+```
+
+**Indexes:**
+- `HashIndex(user_id)` / `HashIndex(item_idx)` UNIQUE.
+
+**Storage:** 8 + 40 = **48 bytes/row**. 1000 users + 20 items ≈ 49 KB.
+
+## 6.8 Bảng `sessions`
+
+```cpp
+struct SessionRecord {
+    std::string code;        // "1234"
+    std::string openedAt;
+    std::string closedAt;
+    std::string status;      // "O" hoặc "C"
+};
+```
+
+**Indexes:**
+- `HashIndex(code)` UNIQUE PK.
+- `BTreeIndex(opened_at)` — báo cáo theo khoảng thời gian.
+
+**Storage:** 10 + 20 + 20 + 2 = **52 bytes/row**.
+
+## 6.9 In-RAM hot caches (LfmService)
+
+Cho hiệu năng training, `LfmService` giữ thêm 3 mảng phẳng làm cache (sync với tables):
+
+```cpp
+// server/services/lfm_service.h
+class LfmService {
+    float P_[MAX_USERS][K];                // mirror lfm_p
+    float Q_[MAX_MENU][K];                 // mirror lfm_q
+    int   orderHistory_[MAX_USERS][MAX_MENU];  // aggregate đếm rebuilt
+    ...
+};
+```
+
+| Mảng | Kích thước | Persistence |
 |---|---|---|
-| `userPhone[]`, `userName[]`, `userDesc[]`, `userTotalOrders[]` | `data/users.dat` | Binary. `orderHistory[][]` KHÔNG còn ở đây (derived từ txns) |
-| `txn*[]` (toàn bộ) | `data/transactions.dat` | Binary, persistent xuyên ca |
-| Mỗi đơn (human log) | `data/transactions.log` | Text append-only, audit trail |
-| `P[][]` | `data/lfm_P.dat` | Binary: `[userCount][K] × float` |
-| `Q[][]` | `data/lfm_Q.dat` | Binary: `[menuCount][K] × float` |
-| Toàn bộ đơn ca | `data/reports/report_YYYY-MM-DD.txt` | Text (xem [08-file-formats.md](08-file-formats.md)) |
+| `P_` | 1000×10×4 = 40 KB | sync ↔ `lfm_p` table |
+| `Q_` | 20×10×4 = 0.8 KB | sync ↔ `lfm_q` table |
+| `orderHistory_` | 1000×20×4 = 80 KB | derived từ `transactions` qua `rebuildOrderHistory()` |
+
+`orderHistory_` không persist trực tiếp — luôn rebuild lúc startup từ transactions
+để tránh inconsistency.
+
+## 6.10 Quy ước index nội bộ
+
+- `userId ∈ [0, userCount)` — assigned tuần tự khi `getOrCreate(phone)` trả userId mới.
+- `menuIdx ∈ [0, menuCount)` — chính là `RowId` trong bảng `menu` sau khi load.
+- `txnId ∈ [0, txnCount)` — assigned bởi `TransactionRepository::nextTxnId()`.
+- `clientId` ≠ `userId`: `clientId` = slot socket trong TcpServer; `userId` = bảng users.
+
+## 6.11 Mapping bảng → file `.tbl`
+
+| Bảng | File | Persistent |
+|---|---|---|
+| `menu` | `data/menu.tbl` | mirror `data/menu.txt` (input ưu tiên) |
+| `users` | `data/users.tbl` | ✅ |
+| `transactions` | `data/transactions.tbl` | ✅ |
+| `transaction_items` | `data/transaction_items.tbl` | ✅ |
+| `lfm_p` | `data/lfm_p.tbl` | ✅ |
+| `lfm_q` | `data/lfm_q.tbl` | ✅ |
+| `sessions` | `data/sessions.tbl` | ✅ |
+
+Format chi tiết xem [08-file-formats.md](08-file-formats.md).
+
+## 6.12 Vòng đời dữ liệu
+
+```mermaid
+sequenceDiagram
+    participant Main
+    participant Db as Database
+    participant Repos
+    participant Svc as Services
+
+    Main->>Db: initRestaurantSchema (define 7 tables)
+    Main->>Db: openAll("data") → load .tbl
+    Main->>Svc: menuService.loadFromFile(menu.txt)
+    Note over Svc: clear menu table → re-insert
+    Main->>Svc: lfmService.loadFromRepository
+    Note over Svc: copy lfm_p, lfm_q tables → P_, Q_ flat arrays
+    Main->>Svc: lfmService.rebuildOrderHistory
+    Note over Svc: scan transactions table → orderHistory_
+
+    loop Mỗi ORDER_SUBMIT
+        Svc->>Repos: txnRepo.save(TransactionRecord)
+        Svc->>Repos: userRepo.incrementTotalOrders
+        Svc->>Db: saveAll("data") (persist-on-order)
+    end
+
+    Main->>Svc: sessionLifecycle.stop
+    Svc->>Svc: report write
+    Svc->>Repos: lfmRepo.save P_, Q_
+    Svc->>Db: saveAll("data") (final flush)
+```

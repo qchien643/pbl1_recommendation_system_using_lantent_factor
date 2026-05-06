@@ -1,60 +1,128 @@
-# 02 · Business Rules
+# 02 · Business Rules — Quy tắc nghiệp vụ
 
-Nguồn: [phan-tich-du-an-702.md](../../phan-tich-du-an-702.md) §4.2.
+Toàn bộ 16 quy tắc bắt buộc theo đặc tả [phan-tich-du-an-702.md](../../phan-tich-du-an-702.md) §4.2.
 
-## Toàn bộ 16 rules
+## 2.1 Bảng tổng hợp 16 BR
 
-| ID | Quy tắc |
-|---|---|
-| **BR01** | Khách chỉ được đặt tối đa **5 món** mỗi đơn hàng |
-| **BR02** | Nhấn **Enter trắng** hoặc nhập **`00`** để kết thúc chọn món |
-| **BR03** | Đủ 5 món → tự động kết thúc, in hóa đơn ngay |
-| **BR04** | Tổng đơn **≥ 2.000.000đ** → giảm **25%** |
-| **BR05** | Ca làm việc được định danh bằng **mã số** (vd: `1234`) |
-| **BR06** | Kết thúc ca: nhập lại đúng mã số đã mở → đóng ca |
-| **BR07** | Toàn bộ đơn hàng ghi ra **file** khi kết thúc ca |
-| **BR08** | Server nhận mã giao dịch → broadcast `START` tới tất cả Client |
-| **BR09** | Client **chỉ hoạt động** sau khi nhận tín hiệu `START` từ Server |
-| **BR10** | Mỗi đơn từ Client gửi về Server **ngay lập tức** qua TCP socket |
-| **BR11** | **Khách phải nhập SDT (10 chữ số)** trước khi đặt món |
-| **BR12** | SDT là **`user_id`** trong Latent Factor Model — lưu xuyên ca |
-| **BR13** | Món có **mã 3 ký tự** (vd `P01`) — khách chỉ nhập mã, không nhập tên |
-| **BR14** | Gợi ý món dùng **LFM** — cá nhân hóa theo SDT từng khách |
-| **BR15** | Hệ thống tra SDT → chào khách quen và gợi ý thông minh hơn |
-| **BR16** | Mọi thao tác nhập liệu chỉ dùng **số** và **mã ASCII không dấu** |
+| ID | Quy tắc | Cài đặt |
+|---|---|---|
+| **BR01** | Khách chỉ được đặt tối đa **5 món** mỗi đơn | `MAX_ITEMS = 5` trong [shared/constants.h](../../shared/constants.h) |
+| **BR02** | Nhấn Enter trắng hoặc nhập `00` để kết thúc chọn món | [client/input_handler.cpp](../../client/input_handler.cpp) |
+| **BR03** | Đủ 5 món → tự động kết thúc, in hóa đơn ngay | OrderBuilder client-side |
+| **BR04** | Tổng đơn ≥ 2.000.000đ → giảm **25%** | `OrderService::computeDiscount` |
+| **BR05** | Ca làm việc định danh bằng **mã số** (1–9 chữ số) | `SessionService::open` |
+| **BR06** | Đóng ca: nhập lại đúng mã số đã mở | `SessionService::close` |
+| **BR07** | Toàn bộ đơn ghi ra file khi kết thúc ca | `ReportService::writeForCurrentSession` |
+| **BR08** | Server nhận mã giao dịch → broadcast `START` tới tất cả Client | `SessionLifecycle::start` |
+| **BR09** | Client **chỉ hoạt động** sau khi nhận tín hiệu `START` | Client state machine |
+| **BR10** | Mỗi đơn từ Client gửi về Server **ngay lập tức** qua TCP | `MSG_ORDER_SUBMIT` |
+| **BR11** | Khách phải nhập **SDT 10 chữ số** trước khi đặt món | `AuthService::isValidPhone` |
+| **BR12** | SDT là **`user_id`** trong LFM, lưu xuyên ca | `users` table — HashIndex(phone) UNIQUE |
+| **BR13** | Món có **mã 3 ký tự** (P01, B02...) | `MenuService::isValidCode` |
+| **BR14** | Gợi ý món dùng **LFM** — cá nhân hóa theo SDT | `LfmService::topK` |
+| **BR15** | Tra SDT → chào khách quen + gợi ý thông minh hơn | `AuthController::handleLogin` |
+| **BR16** | Mọi input chỉ dùng **số** + **ASCII không dấu** | UI client validate |
 
-## Nhóm theo chức năng
+## 2.2 Phân nhóm theo chức năng
 
-### Quản lý ca (BR05 – BR07)
-- Thu ngân tự chọn mã số khi mở ca.
-- Đóng ca yêu cầu nhập lại **đúng** mã số đã mở → chống đóng nhầm.
-- Xuất file báo cáo `report_YYYY-MM-DD.txt` + lưu P, Q matrices — xem [08-file-formats.md](08-file-formats.md).
+```mermaid
+mindmap
+  root((16 Business Rules))
+    Quan ly ca
+      BR05 Ma so ca
+      BR06 Khop ma de dong
+      BR07 Xuat report
+      BR08 Broadcast START
+    Xac thuc khach
+      BR11 SDT 10 so
+      BR12 SDT la user_id
+      BR15 Chao khach quen
+    Dat mon
+      BR01 Toi da 5 mon
+      BR02 Ket thuc bang 00
+      BR03 Tu dong khi du 5
+      BR13 Ma 3 ky tu
+    Giam gia
+      BR04 25% khi >= 2tr
+    Mang
+      BR09 Cho START
+      BR10 Gui ngay
+    Goi y LFM
+      BR14 Top-3 ca nhan hoa
+    UX
+      BR16 Khong tieng Viet co dau
+```
 
-### Xác thực khách (BR11, BR12, BR15)
-- Bắt buộc nhập SDT trước khi vào menu.
-- Validate: 10 chữ số, bắt đầu bằng `'0'`, toàn chữ số.
-- SDT = `user_id` trong LFM → xuyên ca, xuyên session — lưu trong `users.dat`.
+## 2.3 Flowchart: Discount logic (BR04)
 
-### Đặt món (BR01, BR02, BR03, BR13)
-- Max 5 món / đơn.
-- Mã món 3 ký tự (P01, B02, …) — xem [03-menu-codes.md](03-menu-codes.md).
-- Kết thúc: `00` hoặc Enter trắng, hoặc tự động khi đủ 5 món.
+```mermaid
+flowchart TD
+    A[ORDER_SUBMIT arrived] --> B[Resolve items qua MenuRepository]
+    B --> C["subtotal = sum price * qty"]
+    C --> D{"subtotal >= 2,000,000d ?"}
+    D -- "Yes" --> E["discount = subtotal * 0.25"]
+    D -- "No" --> F["discount = 0"]
+    E --> G["total = subtotal - discount"]
+    F --> G
+    G --> H[Save TransactionRecord]
+    H --> I[Send ORDER_ACK orderId OK]
+```
 
-### Giảm giá (BR04)
-- Chỉ một ngưỡng duy nhất: tổng ≥ **2.000.000đ** → giảm 25% (làm tròn đến đồng).
-- Không có rule khác chồng lên.
+## 2.4 State machine: Mở/đóng ca (BR05–BR08)
 
-### Mạng (BR08, BR09, BR10)
-- Server chủ động broadcast `START` / `STOP`.
-- Client idle cho đến khi nhận `START`.
-- Không batch — mỗi đơn gửi ngay. Xem [04-network-protocol.md](04-network-protocol.md).
+```mermaid
+stateDiagram-v2
+    [*] --> Closed: server start
+    Closed --> Open: input ma so (1-9 digits)
+    Open --> Open: input ma khac → reject
+    Open --> Closed: input ma KHOP
+    Closed --> [*]: shutdown
 
-### LFM (BR14, BR15)
-- Gợi ý top-3 cho mỗi khách ngay khi nhập SDT.
-- Khách quen → dựa vào P[u] đã học. Khách mới → mặc định top món phổ biến.
-- Xem [05-lfm-algorithm.md](05-lfm-algorithm.md).
+    note right of Open
+        BR08 broadcast START + MENU_DATA
+        BR11 ready nhan USER_LOGIN
+        Persist-on-order: moi ORDER_SUBMIT flush .tbl
+    end note
 
-### UX (BR16)
-- Không yêu cầu khách gõ tiếng Việt có dấu ở bất kỳ đâu.
-- Output có thể hiển thị Vietnamese (tên món), nhưng input chỉ số + ASCII.
-- Xem [07-ux-cli-design.md](07-ux-cli-design.md).
+    note right of Closed
+        BR07 ghi report YYYY-MM-DD.txt
+        Save lfm_p.tbl, lfm_q.tbl
+        Broadcast STOP
+    end note
+```
+
+## 2.5 Flowchart: Đặt món (BR01–BR03, BR13)
+
+```mermaid
+flowchart TD
+    Start([Bat dau dat mon]) --> NhapMa[Khach nhap MA MON + SO LUONG]
+    NhapMa --> Valid{"Ma 3 ky tu hop le BR13?"}
+    Valid -- Khong --> Loi[Bao loi, nhap lai]
+    Loi --> NhapMa
+    Valid -- Co --> Them[Them vao don hien tai]
+    Them --> Du{"Du 5 mon BR03?"}
+    Du -- "Yes" --> Auto[Tu dong ket thuc]
+    Du -- "No" --> Tiep{"Khach nhap 00 hoac Enter trang BR02?"}
+    Tiep -- "Yes" --> Done[Ket thuc]
+    Tiep -- "No" --> NhapMa
+    Auto --> Hoa[In hoa don preview]
+    Done --> Hoa
+    Hoa --> XN{"Khach xac nhan Y BR10?"}
+    XN -- "Yes" --> Submit[MSG_ORDER_SUBMIT gui ngay]
+    XN -- "No" --> NhapMa
+    Submit --> End([Cho ORDER_ACK])
+```
+
+## 2.6 Validation summary (BR11, BR13, BR16)
+
+| Field | Quy tắc | Code reference |
+|---|---|---|
+| SDT | 10 chữ số, bắt đầu '0', ASCII | `AuthService::isValidPhone` |
+| Mã món | 3 ký tự: prefix [PBCGADT] + 2 chữ số + tồn tại trong menu | `MenuService::isValidCode` |
+| Số lượng | Số nguyên dương ≤ 99 | `OrderController::handleOrderSubmit` |
+| Mã ca | 1–9 ký tự, không trống | `SessionService::open` |
+| Tên khách | ASCII no diacritics ≤ 39 ký tự | `AuthController::handleRegister` |
+
+**BR16 — Lý do "ASCII only":** Terminal Windows mặc định không hỗ trợ Unicode đầy đủ; ép input ASCII tránh
+được bug rendering, đảm bảo hash của SDT/code chính xác và file binary `.tbl` không cần lo encoding.
+UI client vẫn hiển thị tiếng Việt có dấu cho khách (vd "Phở Bò"), nhưng input chỉ là số/ASCII.

@@ -12,6 +12,8 @@
 #include "../shared/utils.h"
 #include "../shared/constants.h"
 #include "../shared/json.h"
+#include "../shared/db/database.h"
+#include "../shared/db/db_schema.h"
 #include "../server/menu.h"
 #include <cstdio>
 #include <cstring>
@@ -25,8 +27,13 @@
 #include <string>
 #include <chrono>
 
-// Parse MENU_DATA payload va populate global menu (chia se voi order_builder)
+// Parse MENU_DATA payload va populate menu Table (source of truth) + parallel arrays cache.
+// Server đã đăng ký schema; phía client cũng phải initSchema để có menu table với HashIndex.
 static void applyMenuData(const char* payload) {
+    db::initRestaurantSchema();
+    db::Table& menuT = db::Database::instance().table(db::tbl::MENU);
+    menuT.clear();
+
     menuCount = 0;
     const char* p = payload;
     while (*p && menuCount < MAX_MENU) {
@@ -41,6 +48,15 @@ static void applyMenuData(const char* payload) {
             strncpy(menuName[menuCount], name, 49);
             menuName[menuCount][49] = '\0';
             menuPrice[menuCount] = price;
+
+            // Insert vào menu table — findMenuIndex(code) sẽ dùng HashIndex
+            db::Row row(&menuT.schema());
+            row.set(db::col::CODE,     std::string(menuCode[menuCount]));
+            row.set(db::col::NAME,     std::string(menuName[menuCount]));
+            row.set(db::col::PRICE,    (double)price);
+            row.set(db::col::CATEGORY, std::string(""));
+            try { menuT.insert(std::move(row)); } catch (...) {}
+
             menuCount++;
         }
         const char* nxt = strchr(p, '|');

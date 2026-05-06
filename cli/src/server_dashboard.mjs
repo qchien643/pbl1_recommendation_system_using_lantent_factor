@@ -7,14 +7,16 @@ import { fileURLToPath } from 'node:url';
 import blessed from 'blessed';
 import contrib from 'blessed-contrib';
 import { createServerIpc } from './server_ipc.js';
+import { loadUsersTbl, loadTransactionsTbl, loadTxnItemsTbl, indexItemsByTxn } from './tbl_reader.mjs';
 
 // Project root la 2 cap tren src/server_dashboard.mjs (chay tu bat ky CWD nao)
 const __dirname  = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(__dirname, '../..');
 const DATA_DIR   = path.join(PROJECT_ROOT, 'data');
-const pathUsers  = path.join(DATA_DIR, 'users.dat');
-const pathTxns   = path.join(DATA_DIR, 'transactions.dat');
-const pathMenu   = path.join(DATA_DIR, 'menu.txt');
+const pathUsers     = path.join(DATA_DIR, 'users.tbl');         // mini-DBMS format
+const pathTxns      = path.join(DATA_DIR, 'transactions.tbl');
+const pathTxnItems  = path.join(DATA_DIR, 'transaction_items.tbl');
+const pathMenu      = path.join(DATA_DIR, 'menu.txt');
 
 const MAX_CLIENTS = 20;
 
@@ -66,35 +68,25 @@ const sessionBox = grid.set(0, 7, 3, 5, blessed.box, {
   padding: { left: 1, right: 1 }
 });
 
-// Row 3-5: Gauges + Stats
-const gaugeOrders = grid.set(3, 0, 3, 3, contrib.lcd, {
-  label: ' Orders Today ',
-  segmentWidth: 0.05,
-  segmentInterval: 0.11,
-  strokeWidth: 0.1,
-  elements: 4,
-  display: 0,
-  elementSpacing: 4,
-  elementPadding: 2,
-  color: 'green',
-  style: { border: { fg: 'green' }, label: { fg: 'green' } }
-});
-const gaugeRevenue = grid.set(3, 3, 3, 4, contrib.lcd, {
-  label: ' Revenue (K VND) ',
-  segmentWidth: 0.05,
-  segmentInterval: 0.11,
-  strokeWidth: 0.1,
-  elements: 7,
-  display: 0,
-  elementSpacing: 3,
-  elementPadding: 2,
-  color: 'cyan',
-  style: { border: { fg: 'cyan' }, label: { fg: 'cyan' } }
-});
-const miscStats = grid.set(3, 7, 3, 5, blessed.box, {
-  label: ' Overall Stats ',
+// Row 3-5: Live Stats + Top Sellers + Top Customers (replaces LCD gauges)
+const liveStatsBox = grid.set(3, 0, 3, 4, blessed.box, {
+  label: ' ▣ Live Stats ',
   border: { type: 'line' },
-  style: { border: { fg: 'blue' }, label: { fg: 'blue', bold: true } },
+  style: { border: { fg: 'cyan' }, label: { fg: 'cyan', bold: true } },
+  tags: true,
+  padding: { left: 1, right: 1 }
+});
+const topSellersBox = grid.set(3, 4, 3, 4, blessed.box, {
+  label: ' ⚑ Top Sellers Today ',
+  border: { type: 'line' },
+  style: { border: { fg: 'yellow' }, label: { fg: 'yellow', bold: true } },
+  tags: true,
+  padding: { left: 1, right: 1 }
+});
+const topCustomersBox = grid.set(3, 8, 3, 4, blessed.box, {
+  label: ' ✦ Top Customers ',
+  border: { type: 'line' },
+  style: { border: { fg: 'green' }, label: { fg: 'green', bold: true } },
   tags: true,
   padding: { left: 1, right: 1 }
 });
@@ -143,12 +135,14 @@ custDetail.hide();
 
 // --- Helpers ---
 function renderHeader() {
-  const status = ready ? '{green-fg}● READY{/}' : '{yellow-fg}○ starting...{/}';
+  // Big block text "VIET PHONG" (cfonts 'chrome' font, hardcoded để render ổn định
+  // không phụ thuộc terminal width detection của cfonts). Box-drawing chars sạch nét.
   const lines = [
-    '{bold}{cyan-fg}VIET PHONG RESTAURANT{/}{/bold}',
-    '',
-    `Server ${status}  ·  port ${port}`,
-    `Time: ${new Date().toLocaleString()}`
+    '{bold}{cyan-fg} ╦  ╦ ╦ ╔═╗ ╔╦╗      ╔═╗ ╦ ╦ ╔═╗ ╔╗╔ ╔═╗{/}',
+    '{bold}{cyan-fg} ╚╗╔╝ ║ ║╣   ║       ╠═╝ ╠═╣ ║ ║ ║║║ ║ ╦{/}',
+    '{bold}{cyan-fg}  ╚╝  ╩ ╚═╝  ╩       ╩   ╩ ╩ ╚═╝ ╝╚╝ ╚═╝{/}',
+    '{yellow-fg} (=^.^=){/}  {magenta-fg}F&B Smart Order{/}  {gray-fg}·{/}  {green-fg}LFM Recommendations{/}',
+    '{gray-fg}                              DUT PBL1 — De 702{/}'
   ];
   headerBox.setContent(lines.join('\n'));
 }
@@ -175,28 +169,122 @@ function renderSession() {
   }
   sessionBox.setContent(lines.join('\n'));
 }
-function renderGauges() {
-  gaugeOrders.setDisplay(stats.totalOrdersToday);
-  const revK = Math.round(stats.revenueToday / 1000);
-  gaugeRevenue.setDisplay(revK);
+// --- Aggregate state cho 3 stats panel (rebuild tu .tbl moi khi co order) ---
+let _aggLastTxnCount = -1;        // throttle: chi rebuild khi txnCount tang
+let _aggTopSellers = [];           // [{code, name, qty, revenue}]
+let _aggTopCustomers = [];         // [{userId, phone, name, count, total}]
+let _aggSessionStats = {           // tinh toan tu txns co session_code = current
+  count: 0, revenue: 0, discountTotal: 0, discountedCount: 0, uniqueUsers: 0
+};
+
+function rebuildAggregates() {
+  try {
+    const txns = loadTransactionsTbl(pathTxns);
+    const items = loadTxnItemsTbl(pathTxnItems);
+    const users = loadUsersTbl(pathUsers);
+    if (txns.length === _aggLastTxnCount && _aggLastTxnCount > 0) return;  // no change
+    _aggLastTxnCount = txns.length;
+
+    const userMap = new Map(users.map(u => [u.userId, u]));
+
+    // Group by item_code (tan dung BTree(item_code) capability)
+    const itemAgg = new Map();
+    for (const it of items) {
+      const cur = itemAgg.get(it.code) ?? { qty: 0, revenue: 0 };
+      cur.qty += it.qty;
+      cur.revenue += it.qty * it.price;
+      itemAgg.set(it.code, cur);
+    }
+    _aggTopSellers = [...itemAgg.entries()]
+      .sort((a, b) => b[1].qty - a[1].qty)
+      .slice(0, 5)
+      .map(([code, c]) => ({ code, name: _menuMap[code] || code, qty: c.qty, revenue: c.revenue }));
+
+    // Group by user_id (tan dung BTree(user_id) capability)
+    const userAgg = new Map();
+    for (const t of txns) {
+      const s = userAgg.get(t.userId) ?? { count: 0, total: 0 };
+      s.count++;
+      s.total += t.total;
+      userAgg.set(t.userId, s);
+    }
+    _aggTopCustomers = [...userAgg.entries()]
+      .sort((a, b) => b[1].total - a[1].total)
+      .slice(0, 5)
+      .map(([uid, s]) => {
+        const u = userMap.get(uid);
+        return {
+          userId: uid,
+          phone: u?.phone || `uid${uid}`,
+          name:  u?.name || '(unnamed)',
+          count: s.count,
+          total: s.total
+        };
+      });
+
+    // Session stats (BTree(session_code) - filter theo current session)
+    if (sessionOpen && sessionCode) {
+      const sessTxns = txns.filter(t => t.sess === sessionCode);
+      _aggSessionStats.count = sessTxns.length;
+      _aggSessionStats.revenue = sessTxns.reduce((a, t) => a + t.total, 0);
+      _aggSessionStats.discountTotal = sessTxns.reduce((a, t) => a + t.discount, 0);
+      _aggSessionStats.discountedCount = sessTxns.filter(t => t.discount > 0).length;
+      _aggSessionStats.uniqueUsers = new Set(sessTxns.map(t => t.userId)).size;
+    } else {
+      _aggSessionStats = { count: 0, revenue: 0, discountTotal: 0, discountedCount: 0, uniqueUsers: 0 };
+    }
+  } catch (e) { /* file chua co — bo qua */ }
 }
-function renderMisc() {
+
+function renderLiveStats() {
+  const s = _aggSessionStats;
   const acc = stats.totalSuggest > 0
     ? Math.round(100 * stats.suggestAccepted / stats.totalSuggest) : 0;
+  const avg = s.count > 0 ? Math.round(s.revenue / s.count) : 0;
   const lines = [
-    `Clients:     {cyan-fg}${stats.clientsConnected}{/}/${MAX_CLIENTS}`,
-    `Users:       {cyan-fg}${stats.usersKnown}{/}`,
-    `Discount:    {yellow-fg}${money(stats.discountToday)}{/}`,
-    `Discounted:  {yellow-fg}${stats.discountedOrders}{/}`,
-    `LFM sugg:    {magenta-fg}${stats.suggestAccepted}/${stats.totalSuggest}{/} ({magenta-fg}${acc}%{/})`
+    `{gray-fg}Session:{/}        {bold}${sessionOpen ? '{green-fg}● ' + sessionCode + '{/}' : '{yellow-fg}○ closed{/}'}{/bold}`,
+    `{gray-fg}Orders today:{/}   {cyan-fg}${s.count}{/}`,
+    `{gray-fg}Revenue today:{/}  {bold}{green-fg}${money(s.revenue)}{/}{/bold}`,
+    `{gray-fg}Discounts:{/}      {yellow-fg}${s.discountedCount}{/} {gray-fg}(-${money(s.discountTotal)}){/}`,
+    `{gray-fg}Avg ticket:{/}     {magenta-fg}${money(avg)}{/}`,
+    `{gray-fg}Unique guests:{/}  {cyan-fg}${s.uniqueUsers}{/}`,
+    `{gray-fg}Active clients:{/} {cyan-fg}${stats.clientsConnected}{/}/${MAX_CLIENTS}  {gray-fg}LFM ${acc}%{/}`
   ];
-  miscStats.setContent(lines.join('\n'));
+  liveStatsBox.setContent(lines.join('\n'));
 }
+
+function renderTopSellers() {
+  if (_aggTopSellers.length === 0) {
+    topSellersBox.setContent('{gray-fg}(chưa có dữ liệu){/}');
+    return;
+  }
+  const medals = ['{yellow-fg}①{/}', '{yellow-fg}②{/}', '{yellow-fg}③{/}', ' ④', ' ⑤'];
+  const lines = _aggTopSellers.map((s, i) => {
+    const name = (s.name || '').slice(0, 14);
+    return `${medals[i]} {bold}${s.code}{/} ${name.padEnd(14)} {cyan-fg}x${String(s.qty).padStart(3)}{/} {green-fg}${money(s.revenue).padStart(10)}{/}`;
+  });
+  topSellersBox.setContent(lines.join('\n'));
+}
+
+function renderTopCustomers() {
+  if (_aggTopCustomers.length === 0) {
+    topCustomersBox.setContent('{gray-fg}(chưa có dữ liệu){/}');
+    return;
+  }
+  const medals = ['{yellow-fg}①{/}', '{yellow-fg}②{/}', '{yellow-fg}③{/}', ' ④', ' ⑤'];
+  const lines = _aggTopCustomers.map((c, i) => {
+    const name = (c.name || '(unnamed)').slice(0, 14);
+    return `${medals[i]} ${c.phone} ${name.padEnd(14)} {cyan-fg}x${String(c.count).padStart(2)}{/} {green-fg}${money(c.total).padStart(10)}{/}`;
+  });
+  topCustomersBox.setContent(lines.join('\n'));
+}
+
 function redraw() {
   renderHeader();
   renderSession();
-  renderGauges();
-  renderMisc();
+  renderLiveStats();
+  renderTopSellers();
+  renderTopCustomers();
   screen.render();
 }
 
@@ -330,16 +418,22 @@ function loadTransactionsDat() {
   return txns;
 }
 
-// Load all customer data: users.dat (source of truth for khach) + transactions.dat (chi tiet don)
+// Load all customer data từ mini-DBMS .tbl files
+//   users.tbl              — 1 row per khách
+//   transactions.tbl       — 1 row per đơn (header)
+//   transaction_items.tbl  — N rows per đơn (line items)
 function loadCustomerData() {
   _custData = {};
   loadMenu();
 
-  // 1. Load danh sach khach tu users.dat
-  const users = loadUsersDat();
-  users.forEach((u, idx) => {
+  // 1. Load danh sách khách
+  const users = loadUsersTbl(pathUsers);
+  // Map userId → phone (user_id là cột rõ ràng trong table mới)
+  const phoneByUserId = new Map();
+  users.forEach((u) => {
+    phoneByUserId.set(u.userId, u.phone);
     _custData[u.phone] = {
-      userIdx: idx,
+      userId: u.userId,
       name: u.name || '',
       desc: u.desc || '',
       count: u.totalOrders,
@@ -348,17 +442,20 @@ function loadCustomerData() {
     };
   });
 
-  // 2. Load transactions binary va attach vao tung khach theo userIdx
-  const allTxns = loadTransactionsDat();
-  const phoneByIdx = users.map((u) => u.phone);
-  allTxns.forEach((t) => {
-    const phone = phoneByIdx[t.userIdx];
+  // 2. Load transactions + items, group items theo txn_id
+  const txns = loadTransactionsTbl(pathTxns);
+  const items = loadTxnItemsTbl(pathTxnItems);
+  const itemsByTxn = indexItemsByTxn(items);
+
+  txns.forEach((t) => {
+    const phone = phoneByUserId.get(t.userId);
     if (!phone || !_custData[phone]) return;
     _custData[phone].totalSpent += t.total;
+    const txItems = itemsByTxn.get(t.txnId) || [];
     _custData[phone].txns.push({
-      ts: t.time,
-      sess: t.session,
-      items: t.items,
+      ts: t.ts,
+      sess: t.sess,
+      items: txItems.map((it) => ({ code: it.code, qty: it.qty })),
       total: t.total,
       discount: t.discount
     });
@@ -500,14 +597,21 @@ setInterval(() => { redraw(); }, 1000);
 // --- Wire IPC ---
 const ipc = createServerIpc();
 
-ipc.on('ready', (e) => {
+// server emit "server_started" sau Spring refactor (truoc la "ready")
+ipc.on('server_started', (e) => {
   ready = true; port = e.port;
-  activityLog.log(`{green-fg}${nowStr()} Server ready · ${e.menuItems} items · ${e.savedUsers} users saved{/}`);
+  loadMenu();
+  activityLog.log(`{green-fg}${nowStr()} ━ Server READY{/}  {gray-fg}port ${e.port}{/}`);
+  redraw();
+});
+ipc.on('menu_loaded', (e) => {
+  activityLog.log(`{gray-fg}${nowStr()} • Menu loaded · ${e.count} items{/}`);
   redraw();
 });
 ipc.on('session_opened', (e) => {
   sessionOpen = true; sessionCode = e.code; sessionStart = e.dateTime; codeInput = '';
-  activityLog.log(`{green-fg}${nowStr()} Session OPENED code=${e.code}{/}`);
+  rebuildAggregates();   // load aggregates tu .tbl files (vd seed data)
+  activityLog.log(`{bold}{blue-fg}${nowStr()} ━━ SESSION OPENED  ·  code ${e.code}{/}{/bold}`);
   redraw();
 });
 ipc.on('session_closed', (e) => {
@@ -516,41 +620,81 @@ ipc.on('session_closed', (e) => {
   redraw();
   setTimeout(() => { ipc.quit(); process.exit(0); }, 2500);
 });
-ipc.on('client_joined', (e) => {
-  activityLog.log(`{cyan-fg}${nowStr()} Table ${String(e.slot + 1).padStart(2, '0')} CONNECTED{/}`);
+// server emit "client_connect"/"client_disconnect" sau Spring refactor
+ipc.on('client_connect', (e) => {
+  const tbl = String(e.slot + 1).padStart(2, '0');
+  stats.clientsConnected++;
+  activityLog.log(`{cyan-fg}${nowStr()} ▼ Table ${tbl}{/}  {gray-fg}connected{/}`);
   redraw();
 });
-ipc.on('client_left', (e) => {
-  activityLog.log(`{gray-fg}${nowStr()} Table ${String(e.slot + 1).padStart(2, '0')} disconnected{/}`);
+ipc.on('client_disconnect', (e) => {
+  const tbl = String(e.slot + 1).padStart(2, '0');
+  if (stats.clientsConnected > 0) stats.clientsConnected--;
+  activityLog.log(`{gray-fg}${nowStr()} ▲ Table ${tbl}  disconnected{/}`);
   redraw();
 });
 ipc.on('user_login', (e) => {
-  const who = e.isNew ? '{green-fg}(NEW CUSTOMER){/}' : `{green-fg}(${e.orderCount} prior orders){/}`;
-  activityLog.log(`{blue-fg}${nowStr()} Table ${String(e.slot + 1).padStart(2, '0')} login ${e.phone}{/} ${who}`);
+  const tbl = String(e.slot + 1).padStart(2, '0');
+  const tag = e.isNew ? '{green-fg}NEW{/}' : `{gray-fg}${e.orderCount} prior orders{/}`;
+  activityLog.log(`{blue-fg}${nowStr()} ▼ LOGIN{/}   {white-fg}Table ${tbl}{/}  ·  ${e.phone}  ·  ${tag}`);
   stats.totalSuggest++;
   redraw();
 });
 ipc.on('user_register', (e) => {
-  activityLog.log(`{magenta-fg}${nowStr()} Table ${String(e.slot + 1).padStart(2, '0')} REGISTER ${e.phone} = "${e.name}"{/}`);
+  const tbl = String(e.slot + 1).padStart(2, '0');
+  activityLog.log(`{magenta-fg}${nowStr()} + REGISTER{/} {white-fg}Table ${tbl}{/}  ·  ${e.phone}  ·  {bold}${e.name}{/}  {green-fg}(NEW){/}`);
   redraw();
 });
 ipc.on('item_added', (e) => {
-  activityLog.log(`{magenta-fg}${nowStr()} Table ${String(e.slot + 1).padStart(2, '0')} added {yellow-fg}${e.code}{/}{/}`);
+  const tbl = String(e.slot + 1).padStart(2, '0');
+  activityLog.log(`{gray-fg}${nowStr()} • Table ${tbl}  added {yellow-fg}${e.code}{/}{/}`);
   stats.totalSuggest++;
   redraw();
 });
+
+// Helper: render rich one-line entry cho ORDER_SUBMIT (re-load .tbl de lay items + name)
+function renderOrderEntry(e) {
+  let phone = '?', name = '?', itemsStr = `${e.items} items`;
+  try {
+    const txns = loadTransactionsTbl(pathTxns);
+    const items = indexItemsByTxn(loadTxnItemsTbl(pathTxnItems));
+    const users = loadUsersTbl(pathUsers);
+    // orderId = txnId + 1 (theo ORDER_ACK format trong order_controller.cpp)
+    const txnId = e.orderId - 1;
+    const t = txns.find(x => x.txnId === txnId);
+    if (t) {
+      const u = users.find(x => x.userId === t.userId);
+      if (u) { phone = u.phone; name = u.name || '(unnamed)'; }
+      const its = items.get(txnId) || [];
+      itemsStr = its.map(it => `${it.code}x${it.qty}`).join(' + ');
+    }
+  } catch {}
+  const tbl = String(e.slot + 1).padStart(2, '0');
+  const isBig = e.discount > 0;
+  if (isBig) {
+    return `{yellow-fg}{bold}${nowStr()} ★ ORDER #${String(e.orderId).padStart(3,'0')}{/}{/bold}  ·  Table ${tbl}  ·  ${phone} ${name}  ·  ${itemsStr}  ·  {bold}${money(e.total)}{/}  {magenta-fg}(-25% = ${money(e.discount)}){/}`;
+  }
+  return `{green-fg}${nowStr()} ✓ ORDER #${String(e.orderId).padStart(3,'0')}{/}  ·  Table ${tbl}  ·  ${phone} ${name}  ·  ${itemsStr}  ·  {bold}${money(e.total)}{/}`;
+}
+
 ipc.on('order_submitted', (e) => {
-  const disc = e.discount > 0 ? ` {yellow-fg}(-${money(e.discount)} off){/}` : '';
-  activityLog.log(`{green-fg}${nowStr()} Table ${String(e.slot + 1).padStart(2, '0')} SUBMIT #${e.orderId} · {white-fg}${money(e.total)}{/}${disc}{/}`);
+  // Stats counters live (incremental, song song voi aggregate tu .tbl)
+  stats.totalOrdersToday++;
+  stats.revenueToday += e.total;
+  if (e.discount > 0) {
+    stats.discountToday += e.discount;
+    stats.discountedOrders++;
+  }
+  // Refresh aggregates tu .tbl files (BTree group-by capability)
+  rebuildAggregates();
+  // Activity Stream entry rich format
+  activityLog.log(renderOrderEntry(e));
   redraw();
 });
-ipc.on('stats', (e) => {
-  stats.totalOrdersToday = e.totalOrdersToday;
-  stats.revenueToday = e.revenueToday;
-  stats.discountToday = e.discountToday;
-  stats.discountedOrders = e.discountedOrders;
-  stats.clientsConnected = e.clientsConnected;
-  stats.usersKnown = e.usersKnown;
+// 'stats' event: legacy, sau refactor server khong emit nua. Stats compute local + tu .tbl.
+ipc.on('suggest', (e) => {
+  // Server gui suggest top-3 → tang counter de track LFM accept rate sau nay
+  if (e.items && e.items.length > 0) stats.suggestAccepted++;
   redraw();
 });
 // heartbeat event: da bo phan hien thi — nhan im lang de khong log spam

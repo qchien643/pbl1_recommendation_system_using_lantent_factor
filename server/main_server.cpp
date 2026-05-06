@@ -1,43 +1,40 @@
 // main_server.cpp — Entry --server [--json]
-// Text mode: printf logs + stdin nhap ma so ca
-// JSON mode: emit JSON events tren stdout, doc JSON cmds tu stdin (cho React Ink Server UI)
+//
+// Sau Spring-style refactor: main chỉ bootstrap + event loop. Mọi business logic
+// nằm trong app::ApplicationContext (DI container).
 
-#include "socket_server.h"
-#include "session.h"
-#include "menu.h"
-#include "user_store.h"
-#include "transaction_store.h"
-#include "lfm.h"
 #include "../shared/net.h"
-#include "../shared/state.h"
+#include "../shared/db/database.h"
+#include "../shared/db/db_schema.h"
+#include "../shared/json.h"
 #include "../shared/utils.h"
 #include "../shared/constants.h"
-#include "../shared/json.h"
+#include "infra/application_context.h"
+#include "infra/text_log_listener.h"
+#include "infra/json_event_listener.h"
+
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <cstdarg>
 #include <ctime>
 #include <thread>
+#include <chrono>
 #include <atomic>
 #include <mutex>
 #include <queue>
 #include <string>
+#include <memory>
 
-// ============================================================================
-// Stdin queue (dung chung cho ca 2 mode)
-// ============================================================================
-static std::mutex cmdMutex;
-static std::queue<std::string> cmdQueue;
-static std::atomic<bool> stdinEof{false};
+// ---- Stdin queue (text+json mode dùng chung) ----
+static std::mutex                cmdMutex;
+static std::queue<std::string>   cmdQueue;
+static std::atomic<bool>         stdinEof{false};
 
 static void stdinReader() {
     char line[512];
     while (fgets(line, sizeof(line), stdin)) {
         int len = (int)strlen(line);
-        while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r')) {
-            line[--len] = '\0';
-        }
+        while (len > 0 && (line[len-1] == '\n' || line[len-1] == '\r')) line[--len] = '\0';
         if (len == 0) continue;
         std::lock_guard<std::mutex> lg(cmdMutex);
         cmdQueue.push(std::string(line));
@@ -48,125 +45,29 @@ static void stdinReader() {
 static bool popCmd(std::string& out) {
     std::lock_guard<std::mutex> lg(cmdMutex);
     if (cmdQueue.empty()) return false;
-    out = cmdQueue.front();
-    cmdQueue.pop();
+    out = cmdQueue.front(); cmdQueue.pop();
     return true;
 }
 
-// ============================================================================
-// JSON MODE event emitters (set lam hooks cho socket_server)
-// ============================================================================
-static void jsonEmit(const char* fmt, ...) {
-    va_list ap; va_start(ap, fmt);
-    vfprintf(stdout, fmt, ap);
-    va_end(ap);
-    fputc('\n', stdout);
-    fflush(stdout);
-}
-
-static int  g_totalOrdersToday = 0;
-static float g_revenueToday = 0;
-static float g_discountToday = 0;
-static int   g_discountedOrders = 0;
-
-static void emitStats() {
-    jsonEmit("{\"event\":\"stats\",\"totalOrdersToday\":%d,\"revenueToday\":%.0f,"
-             "\"discountToday\":%.0f,\"discountedOrders\":%d,"
-             "\"clientsConnected\":%d,\"usersKnown\":%d}",
-             g_totalOrdersToday, g_revenueToday, g_discountToday,
-             g_discountedOrders, srvClientCount(), userCount);
-}
-
-static void jsonOnReady(int port) {
-    jsonEmit("{\"event\":\"ready\",\"port\":%d,\"menuItems\":%d,\"savedUsers\":%d}",
-             port, menuCount, userCount);
-}
-
-static void jsonOnClientJoined(int slot) {
-    jsonEmit("{\"event\":\"client_joined\",\"slot\":%d}", slot);
-    emitStats();
-}
-
-static void jsonOnClientLeft(int slot) {
-    jsonEmit("{\"event\":\"client_left\",\"slot\":%d}", slot);
-    emitStats();
-}
-
-static void jsonOnUserLogin(int slot, const char* phone, int userId,
-                             bool isNew, int orderCount) {
-    char esc[32]; jsonEscape(phone, esc, sizeof(esc));
-    jsonEmit("{\"event\":\"user_login\",\"slot\":%d,\"phone\":\"%s\","
-             "\"userId\":%d,\"isNew\":%s,\"orderCount\":%d}",
-             slot, esc, userId, isNew ? "true" : "false", orderCount);
-}
-
-static void jsonOnItemAdded(int slot, int userId, const char* code, int exCount) {
-    char esc[16]; jsonEscape(code, esc, sizeof(esc));
-    jsonEmit("{\"event\":\"item_added\",\"slot\":%d,\"userId\":%d,"
-             "\"code\":\"%s\",\"excluded\":%d}",
-             slot, userId, esc, exCount);
-}
-
-static void jsonOnOrderSubmitted(int slot, int userId, int orderId,
-                                  int itemCount, float total, float discount) {
-    jsonEmit("{\"event\":\"order_submitted\",\"slot\":%d,\"userId\":%d,"
-             "\"orderId\":%d,\"itemCount\":%d,\"total\":%.0f,\"discount\":%.0f}",
-             slot, userId, orderId, itemCount, total, discount);
-    g_totalOrdersToday++;
-    g_revenueToday += total;
-    if (discount > 0) { g_discountToday += discount; g_discountedOrders++; }
-    emitStats();
-}
-
-static void jsonOnHeartbeat(int slot) {
-    jsonEmit("{\"event\":\"heartbeat\",\"slot\":%d}", slot);
-}
-
-static void jsonOnUserRegister(int slot, const char* phone, int userId, const char* name) {
-    char pesc[32]; jsonEscape(phone, pesc, sizeof(pesc));
-    char nesc[96]; jsonEscape(name, nesc, sizeof(nesc));
-    jsonEmit("{\"event\":\"user_register\",\"slot\":%d,\"phone\":\"%s\","
-             "\"userId\":%d,\"name\":\"%s\"}",
-             slot, pesc, userId, nesc);
-}
-
-static const SrvHooks JSON_HOOKS = {
-    jsonOnReady, jsonOnClientJoined, jsonOnClientLeft,
-    jsonOnUserLogin, jsonOnItemAdded, jsonOnOrderSubmitted, jsonOnHeartbeat,
-    jsonOnUserRegister
-};
-
-// ============================================================================
-// TEXT MODE (Phase 2 — chay default neu khong co --json)
-// ============================================================================
-static int runTextMode() {
+// ---- Text mode: stdin = mã ca. Lần 1 mở, lần 2 đóng (phải khớp). ----
+static int runTextMode(app::ApplicationContext& ctx) {
     printf("[Server] Ready. Nhap MA SO (1-9 chu so) de MO CA:\n");
     std::thread t(stdinReader); t.detach();
 
-    bool sessionFlag = false;
     while (true) {
-        srvPoll(100);
         std::string cmd;
         if (!popCmd(cmd)) {
-            if (stdinEof && !sessionFlag) break;
+            if (stdinEof && !ctx.sessionService().isOpen()) break;
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
             continue;
         }
-        if (!sessionFlag) {
-            if (openSession(cmd.c_str())) {
-                sessionFlag = true;
-                srvBroadcastStart(sessionCode, sessionStart);
-                srvBroadcastMenu();
-                printf("[Server] Session OPENED code=%s start=%s\n",
-                       sessionCode, sessionStart);
-            } else {
+        if (!ctx.sessionService().isOpen()) {
+            if (!ctx.sessionLifecycle().start(cmd)) {
                 printf("[Server] Ma so khong hop le (1-9 ky tu)\n");
             }
         } else {
-            if (matchSessionCode(cmd.c_str())) {
-                char dt[20]; currentTimestamp(dt, sizeof(dt));
-                srvBroadcastStop(dt);
-                closeSession(cmd.c_str(), "data");
-                printf("[Server] Session CLOSED. Report + models saved.\n");
+            if (ctx.sessionService().matchCode(cmd)) {
+                ctx.sessionLifecycle().stop(cmd);
                 break;
             } else {
                 printf("[Server] Ma so khong khop. Nhap lai:\n");
@@ -176,74 +77,37 @@ static int runTextMode() {
     return 0;
 }
 
-// ============================================================================
-// JSON MODE — React Ink Server UI
-// ============================================================================
-static int runJsonMode() {
-    // srvStart da goi onReady truoc do (hooks da set trong main)
+// ---- JSON mode: stdin = lệnh JSON {"cmd":"open_session","code":"1234"}, etc. ----
+static int runJsonMode(app::ApplicationContext& ctx) {
     std::thread t(stdinReader); t.detach();
-    bool sessionFlag = false;
 
     while (true) {
-        srvPoll(100);
-        std::string cmdLine;
-        if (!popCmd(cmdLine)) {
+        std::string line;
+        if (!popCmd(line)) {
             if (stdinEof) break;
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
             continue;
         }
-
         char cmd[32] = {0};
-        if (!jsonGetString(cmdLine.c_str(), "cmd", cmd, sizeof(cmd))) continue;
+        if (!jsonGetString(line.c_str(), "cmd", cmd, sizeof(cmd))) continue;
 
         if (strcmp(cmd, "open_session") == 0) {
             char code[16] = {0};
-            if (!jsonGetString(cmdLine.c_str(), "code", code, sizeof(code))) continue;
-            if (openSession(code)) {
-                sessionFlag = true;
-                srvBroadcastStart(sessionCode, sessionStart);
-                srvBroadcastMenu();
-                char esc1[16], esc2[32];
-                jsonEscape(sessionCode, esc1, sizeof(esc1));
-                jsonEscape(sessionStart, esc2, sizeof(esc2));
-                jsonEmit("{\"event\":\"session_opened\",\"code\":\"%s\",\"dateTime\":\"%s\"}",
-                         esc1, esc2);
-                emitStats();
-            } else {
-                jsonEmit("{\"event\":\"error\",\"message\":\"invalid_session_code\"}");
-            }
+            if (!jsonGetString(line.c_str(), "code", code, sizeof(code))) continue;
+            if (!ctx.sessionLifecycle().start(code))
+                printf("{\"event\":\"error\",\"message\":\"invalid_session_code\"}\n");
         }
         else if (strcmp(cmd, "close_session") == 0) {
             char code[16] = {0};
-            if (!jsonGetString(cmdLine.c_str(), "code", code, sizeof(code))) continue;
-            if (matchSessionCode(code)) {
-                char dt[20]; currentTimestamp(dt, sizeof(dt));
-                srvBroadcastStop(dt);
-                closeSession(code, "data");
-                char esc[32]; jsonEscape(dt, esc, sizeof(esc));
-                jsonEmit("{\"event\":\"session_closed\",\"dateTime\":\"%s\","
-                         "\"totalOrders\":%d,\"totalRevenue\":%.0f,"
-                         "\"totalDiscount\":%.0f,\"discountedOrders\":%d,\"uniqueUsers\":%d}",
-                         esc, g_totalOrdersToday, g_revenueToday,
-                         g_discountToday, g_discountedOrders, userCount);
-                sessionFlag = false;
-                break;
-            } else {
-                jsonEmit("{\"event\":\"error\",\"message\":\"code_mismatch\"}");
-            }
+            if (!jsonGetString(line.c_str(), "code", code, sizeof(code))) continue;
+            if (ctx.sessionLifecycle().stop(code)) break;
+            else printf("{\"event\":\"error\",\"message\":\"code_mismatch\"}\n");
         }
-        else if (strcmp(cmd, "get_stats") == 0) {
-            emitStats();
-        }
-        else if (strcmp(cmd, "quit") == 0) {
-            break;
-        }
+        else if (strcmp(cmd, "quit") == 0) break;
     }
     return 0;
 }
 
-// ============================================================================
-// ENTRY
-// ============================================================================
 int main(int argc, char** argv) {
     const char* mode = (argc > 1) ? argv[1] : "--server";
     if (strcmp(mode, "--server") != 0) {
@@ -251,47 +115,49 @@ int main(int argc, char** argv) {
         return 1;
     }
     bool jsonMode = false;
-    for (int i = 2; i < argc; i++) {
-        if (strcmp(argv[i], "--json") == 0) jsonMode = true;
-    }
+    for (int i = 2; i < argc; i++) if (strcmp(argv[i], "--json") == 0) jsonMode = true;
 
     setbuf(stdout, NULL);
-
     if (!netInit()) { fprintf(stderr, "netInit failed\n"); return 1; }
 
-    if (!loadMenu("data/menu.txt")) {
+    db::initRestaurantSchema();
+    db::Database::instance().openAll("data");
+
+    // Event listener (text vs json)
+    std::unique_ptr<app::IServerEventListener> listener;
+    if (jsonMode) listener = std::make_unique<app::JsonEventListener>();
+    else          listener = std::make_unique<app::TextLogListener>();
+
+    // ApplicationContext = DI container — tạo + wire repositories/services/controllers/network.
+    app::ApplicationContext ctx(db::Database::instance(), *listener, DEFAULT_PORT);
+
+    if (!ctx.menuService().loadFromFile("data/menu.txt")) {
         fprintf(stderr, "[Server] Cannot load data/menu.txt\n");
         netCleanup(); return 1;
     }
+    listener->onMenuLoaded((int)ctx.menuService().count());
 
-    if (loadUsers("data/users.dat") && !jsonMode) {
-        printf("[Server] Loaded %d existing users\n", userCount);
+    // LFM init: random first, sau đó override nếu tìm thấy vector trong .tbl.
+    ctx.lfmService().initRandom((unsigned int)time(NULL));
+    if (ctx.lfmService().loadFromRepository() && !jsonMode) {
+        printf("[Server] Loaded LFM model from .tbl\n");
     }
 
-    if (loadTransactions("data/transactions.dat")) {
-        rebuildOrderHistory();
-        if (!jsonMode) printf("[Server] Loaded %d transactions, orderHistory rebuilt\n", txnCount);
-    } else {
-        if (!jsonMode) printf("[Server] No transactions.dat found (fresh start)\n");
+    ctx.lfmService().rebuildOrderHistory();
+    if (!jsonMode) {
+        int64_t cnt = ctx.database().table(db::tbl::TRANSACTIONS).size();
+        printf("[Server] orderHistory rebuilt from %lld transactions\n", (long long)cnt);
     }
 
-    lfmInit((unsigned int)time(NULL));
-    if (lfmLoadModels("data/lfm_P.dat", "data/lfm_Q.dat")) {
-        if (!jsonMode) printf("[Server] Loaded LFM model from disk\n");
-    } else {
-        if (!jsonMode) printf("[Server] Using fresh random init\n");
-    }
-
-    if (jsonMode) srvSetHooks(&JSON_HOOKS);
-
-    if (!srvStart(DEFAULT_PORT)) {
+    if (!ctx.tcpServer().start()) {
         fprintf(stderr, "[Server] Failed to start listener on port %d\n", DEFAULT_PORT);
         netCleanup(); return 1;
     }
+    listener->onServerStarted(DEFAULT_PORT);
 
-    int rc = jsonMode ? runJsonMode() : runTextMode();
+    int rc = jsonMode ? runJsonMode(ctx) : runTextMode(ctx);
 
-    srvStop();
+    ctx.tcpServer().stop();
     netCleanup();
     return rc;
 }
